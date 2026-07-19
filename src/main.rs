@@ -1,6 +1,7 @@
 use std::io::{self, BufRead, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
+use std::process::Command;
 
 fn main() {
     let stdin = io::stdin();
@@ -45,8 +46,21 @@ fn main() {
                     println!("{}: not found", target);
                 }
             }
-            // For now, every other command is invalid.
-            _ => println!("{}: command not found", command),
+            // Non-builtin commands: try to run an external program.
+            _ => {
+                let args: Vec<&str> = parts.collect();
+                if let Some(program) = find_executable(command) {
+                    let status = Command::new(&program)
+                        .args(&args)
+                        .status();
+                    // If spawning failed, treat it as a not-found command.
+                    if status.is_err() {
+                        println!("{}: command not found", command);
+                    }
+                } else {
+                    println!("{}: command not found", command);
+                }
+            }
         }
     }
 }
