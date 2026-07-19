@@ -32,8 +32,22 @@ fn main() {
                 let args: Vec<&str> = parts.collect();
                 println!("{}", args.join(" "));
             }
+            "type" => {
+                // Report how the given command would be interpreted.
+                let target = parts.next().unwrap_or("");
+                if is_builtin(target) {
+                    println!("{} is a shell builtin", target);
+                } else {
+                    println!("{}: not found", target);
+                }
+            }
             // For now, every other command is invalid.
             _ => println!("{}: command not found", command),
         }
     }
+}
+
+/// Returns true if the given command name is a shell builtin.
+fn is_builtin(command: &str) -> bool {
+    matches!(command, "echo" | "exit" | "type")
 }
