@@ -21,8 +21,14 @@ fn main() {
         }
 
         // Treat the first whitespace-separated token as the command.
-        // For now, every command is invalid.
         let command = input.split_whitespace().next().unwrap();
+
+        // Builtins are handled directly by the shell.
+        if command == "exit" {
+            break;
+        }
+
+        // For now, every other command is invalid.
         println!("{}: command not found", command);
     }
 }
