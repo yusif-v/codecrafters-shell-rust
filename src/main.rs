@@ -37,6 +37,19 @@ fn main() {
         let command = cmd_args[0].as_str();
         let rest = &cmd_args[1..];
 
+        // For builtins (run in-process), the shell must still open redirect
+        // target files at command time — even if the builtin writes nothing to
+        // that stream. A real shell creates the file for `2>` regardless. This
+        // mirrors how external commands get their stdio opened below.
+        if is_builtin(command) {
+            if let Some(p) = &redirect.stdout {
+                let _ = std::fs::File::create(p);
+            }
+            if let Some(p) = &redirect.stderr {
+                let _ = std::fs::File::create(p);
+            }
+        }
+
         // Builtins are handled directly by the shell. Builtins produce output as
         // a String so it can be redirected to a file like external programs.
         match command {
