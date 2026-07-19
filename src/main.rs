@@ -51,7 +51,18 @@ fn main() {
                     // required by this stage).
                     continue;
                 }
-                match std::env::set_current_dir(target) {
+                // Expand a leading ~ (and ~/...) to the user's home directory.
+                let resolved = if target == "~" {
+                    home_dir().unwrap_or_else(|| target.to_string())
+                } else if let Some(rest) = target.strip_prefix("~/") {
+                    match home_dir() {
+                        Some(home) => format!("{}/{}", home, rest),
+                        None => target.to_string(),
+                    }
+                } else {
+                    target.to_string()
+                };
+                match std::env::set_current_dir(&resolved) {
                     Ok(()) => {}
                     Err(_) => println!("cd: {}: No such file or directory", target),
                 }
@@ -87,7 +98,19 @@ fn main() {
     }
 }
 
-/// Returns true if the given command name is a shell builtin.
+/// Returns the user's home directory as a string, read from the HOME
+/// environment variable (falling back to the OS user home dir).
+fn home_dir() -> Option<String> {
+    if let Ok(home) = std::env::var("HOME") {
+        if !home.is_empty() {
+            return Some(home);
+        }
+    }
+    std::env::var("USER")
+        .ok()
+        .map(|u| format!("/Users/{}", u))
+        .filter(|p| Path::new(p).is_dir())
+}
 fn is_builtin(command: &str) -> bool {
     matches!(command, "echo" | "exit" | "type" | "pwd" | "cd")
 }
