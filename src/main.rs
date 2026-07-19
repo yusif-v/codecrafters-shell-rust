@@ -43,6 +43,19 @@ fn main() {
                     Err(_) => println!("pwd: error retrieving current directory"),
                 }
             }
+            "cd" => {
+                // Change the current working directory.
+                let target = parts.next().unwrap_or("");
+                if target.is_empty() {
+                    // No argument: behave as a no-op (real shells go home; not
+                    // required by this stage).
+                    continue;
+                }
+                match std::env::set_current_dir(target) {
+                    Ok(()) => {}
+                    Err(_) => println!("cd: {}: No such file or directory", target),
+                }
+            }
             "type" => {
                 // Report how the given command would be interpreted.
                 let target = parts.next().unwrap_or("");
@@ -76,7 +89,7 @@ fn main() {
 
 /// Returns true if the given command name is a shell builtin.
 fn is_builtin(command: &str) -> bool {
-    matches!(command, "echo" | "exit" | "type" | "pwd")
+    matches!(command, "echo" | "exit" | "type" | "pwd" | "cd")
 }
 
 /// Searches the directories listed in PATH for an executable file matching
