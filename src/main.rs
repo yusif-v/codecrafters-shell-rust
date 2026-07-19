@@ -1,4 +1,6 @@
 use std::io::{self, BufRead, Write};
+use std::os::unix::fs::PermissionsExt;
+use std::path::Path;
 
 fn main() {
     let stdin = io::stdin();
@@ -37,6 +39,8 @@ fn main() {
                 let target = parts.next().unwrap_or("");
                 if is_builtin(target) {
                     println!("{} is a shell builtin", target);
+                } else if let Some(full_path) = find_executable(target) {
+                    println!("{} is {}", target, full_path);
                 } else {
                     println!("{}: not found", target);
                 }
@@ -50,4 +54,28 @@ fn main() {
 /// Returns true if the given command name is a shell builtin.
 fn is_builtin(command: &str) -> bool {
     matches!(command, "echo" | "exit" | "type")
+}
+
+/// Searches the directories listed in PATH for an executable file matching
+/// `command`. Returns the full path of the first match (a file that exists and
+/// has any execute bit set), or None if no executable is found.
+fn find_executable(command: &str) -> Option<String> {
+    let path_var = std::env::var("PATH").unwrap_or_default();
+    for dir in path_var.split(':') {
+        if dir.is_empty() {
+            continue;
+        }
+        let candidate = Path::new(dir).join(command);
+        if is_executable(&candidate) {
+            return candidate.to_str().map(|s| s.to_string());
+        }
+    }
+    None
+}
+
+/// True if the path exists and has at least one execute permission bit set.
+fn is_executable(path: &Path) -> bool {
+    std::fs::metadata(path)
+        .map(|m| m.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
 }
