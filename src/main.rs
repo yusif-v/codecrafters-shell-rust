@@ -137,6 +137,16 @@ fn tokenize(input: &str) -> Vec<String> {
             QuoteState::Double => {
                 if ch == '"' {
                     quote = QuoteState::None;
+                } else if ch == '\\' && i + 1 < chars.len() {
+                    // Inside double quotes, backslash only escapes \" and \\;
+                    // for all other characters the backslash is literal.
+                    let next = chars[i + 1];
+                    if next == '"' || next == '\\' {
+                        current.push(next);
+                        i += 1; // consume the escaped character
+                    } else {
+                        current.push(ch); // literal backslash
+                    }
                 } else {
                     current.push(ch);
                 }
