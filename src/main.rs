@@ -102,40 +102,52 @@ fn main() {
     }
 }
 
-/// Splits a command line into arguments, honoring single quotes.
+/// Splits a command line into arguments, honoring single and double quotes.
 ///
-/// Whitespace outside quotes delimits arguments. Inside single quotes, every
-/// character is literal (spaces, $, *, ~ all lose special meaning). Adjacent
-/// quoted/unquoted segments concatenate into one argument; empty quotes ('')
-/// contribute nothing.
+/// Whitespace outside quotes delimits arguments. Inside quotes (single or
+/// double) every character is literal for this stage: spaces are preserved and
+/// other quote characters lose their special meaning (so a ' inside "..." and a
+/// " inside '...' are literal). Adjacent quoted/unquoted segments concatenate
+/// into one argument; empty quotes ('') contribute nothing. (Later stages will
+/// add $ / \ interpretation inside double quotes.)
 fn tokenize(input: &str) -> Vec<String> {
+    #[derive(PartialEq)]
+    enum QuoteState {
+        None,
+        Single,
+        Double,
+    }
+
     let mut args: Vec<String> = Vec::new();
     let mut current = String::new();
-    let mut in_single_quote = false;
+    let mut quote = QuoteState::None;
 
     for ch in input.chars() {
-        if in_single_quote {
-            if ch == '\'' {
-                // End of a quoted segment.
-                in_single_quote = false;
-            } else {
-                // Everything inside single quotes is literal.
-                current.push(ch);
-            }
-        } else {
-            match ch {
-                '\'' => {
-                    // Begin a quoted segment.
-                    in_single_quote = true;
+        match quote {
+            QuoteState::Single => {
+                if ch == '\'' {
+                    quote = QuoteState::None;
+                } else {
+                    current.push(ch);
                 }
+            }
+            QuoteState::Double => {
+                if ch == '"' {
+                    quote = QuoteState::None;
+                } else {
+                    current.push(ch);
+                }
+            }
+            QuoteState::None => match ch {
+                '\'' => quote = QuoteState::Single,
+                '"' => quote = QuoteState::Double,
                 c if c.is_whitespace() => {
-                    // Whitespace ends the current argument (if non-empty).
                     if !current.is_empty() {
                         args.push(std::mem::take(&mut current));
                     }
                 }
                 _ => current.push(ch),
-            }
+            },
         }
     }
 
