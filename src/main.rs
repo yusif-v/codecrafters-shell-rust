@@ -21,14 +21,19 @@ fn main() {
         }
 
         // Treat the first whitespace-separated token as the command.
-        let command = input.split_whitespace().next().unwrap();
+        let mut parts = input.split_whitespace();
+        let command = parts.next().unwrap();
 
         // Builtins are handled directly by the shell.
-        if command == "exit" {
-            break;
+        match command {
+            "exit" => break,
+            "echo" => {
+                // Print the remaining arguments joined by single spaces.
+                let args: Vec<&str> = parts.collect();
+                println!("{}", args.join(" "));
+            }
+            // For now, every other command is invalid.
+            _ => println!("{}: command not found", command),
         }
-
-        // For now, every other command is invalid.
-        println!("{}: command not found", command);
     }
 }
