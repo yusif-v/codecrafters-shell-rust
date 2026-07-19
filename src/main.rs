@@ -30,7 +30,7 @@ fn main() {
         if args.is_empty() {
             continue;
         }
-        let (cmd_args, stdout_redirect) = parse_redirections(&args);
+        let (cmd_args, redirect) = parse_redirections(&args);
         if cmd_args.is_empty() {
             continue;
         }
@@ -42,14 +42,14 @@ fn main() {
         match command {
             "exit" => break,
             "echo" => {
-                emit(&rest.join(" "), &stdout_redirect);
+                emit(&rest.join(" "), &redirect);
             }
             "pwd" => {
                 let out = match std::env::current_dir() {
                     Ok(dir) => dir.display().to_string(),
                     Err(_) => "pwd: error retrieving current directory".to_string(),
                 };
-                emit(&out, &stdout_redirect);
+                emit(&out, &redirect);
             }
             "cd" => {
                 // Change the current working directory.
@@ -84,7 +84,7 @@ fn main() {
                 } else {
                     format!("{}: not found", target)
                 };
-                emit(&out, &stdout_redirect);
+                emit(&out, &redirect);
             }
             // Non-builtin commands: try to run an external program.
             _ => {
@@ -92,12 +92,14 @@ fn main() {
                     let mut cmd = Command::new(&program);
                     cmd.arg0(command) // argv[0] = command as typed, not the resolved path
                         .args(rest);
-                    if let Some(path) = &stdout_redirect {
-                        match std::fs::File::create(path) {
-                            Ok(file) => {
-                                cmd.stdout(Stdio::from(file));
-                            }
-                            Err(_) => { /* fall through to terminal on open error */ }
+                    if let Some(path) = &redirect.stdout {
+                        if let Ok(file) = std::fs::File::create(path) {
+                            cmd.stdout(Stdio::from(file));
+                        }
+                    }
+                    if let Some(path) = &redirect.stderr {
+                        if let Ok(file) = std::fs::File::create(path) {
+                            cmd.stderr(Stdio::from(file));
                         }
                     }
                     let status = cmd.status();
@@ -112,34 +114,45 @@ fn main() {
     }
 }
 
-/// Extracts stdout redirection (`>` or `1>`) from a token list.
+/// Holds the stdout/stderr redirect targets parsed from a command line.
+struct Redirection {
+    stdout: Option<String>,
+    stderr: Option<String>,
+}
+
+/// Extracts redirection operators (`>`, `1>`, `2>`) from a token list.
 ///
-/// Returns the tokens with the redirection operator and its filename removed,
-/// plus the optional target file path. `2>` and other operators are ignored
-/// here (handled by later stages). Only the FIRST `>`/`1>` is honored.
-fn parse_redirections(args: &[String]) -> (Vec<String>, Option<String>) {
+/// Returns the tokens with each redirect operator and its filename removed,
+/// plus any stdout/stderr target file paths. Only the FIRST occurrence of each
+/// operator is honored. `<` and `>>` are handled by later stages.
+fn parse_redirections(args: &[String]) -> (Vec<String>, Redirection) {
     let mut out: Vec<String> = Vec::new();
-    let mut redirect: Option<String> = None;
+    let mut redir = Redirection { stdout: None, stderr: None };
     let mut i = 0;
     while i < args.len() {
         let a = &args[i];
-        if (a == ">" || a == "1>") && i + 1 < args.len() {
-            redirect = Some(args[i + 1].clone());
-            i += 2; // skip operator and its filename
+        let target = if (a == ">" || a == "1>") && i + 1 < args.len() {
+            &mut redir.stdout
+        } else if a == "2>" && i + 1 < args.len() {
+            &mut redir.stderr
+        } else {
+            out.push(a.clone());
+            i += 1;
             continue;
-        }
-        out.push(a.clone());
-        i += 1;
+        };
+        *target = Some(args[i + 1].clone());
+        i += 2; // skip operator and its filename
     }
-    (out, redirect)
+    (out, redir)
 }
 
-/// Writes `text` followed by a newline. If `redirect` is set, the output goes to
-/// that file (truncating/creating it); otherwise it goes to the terminal.
-fn emit(text: &str, redirect: &Option<String>) {
-    match redirect {
+/// Writes `text` followed by a newline. If a stdout redirect is set, the output
+/// goes to that file (truncating/creating it); otherwise it goes to the
+/// terminal. (Builtins emit only to stdout; stderr redirects don't apply to
+/// them, which matches shell behavior.)
+fn emit(text: &str, redirect: &Redirection) {
+    match &redirect.stdout {
         Some(path) => {
-            // Errors opening the file are ignored; output simply doesn't appear.
             if let Ok(mut f) = std::fs::File::create(path) {
                 let _ = writeln!(f, "{}", text);
             }
