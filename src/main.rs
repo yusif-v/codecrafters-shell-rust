@@ -1,6 +1,7 @@
 use std::io::{self, BufRead, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
+use std::os::unix::process::CommandExt;
 use std::process::Command;
 
 fn main() {
@@ -51,6 +52,7 @@ fn main() {
                 let args: Vec<&str> = parts.collect();
                 if let Some(program) = find_executable(command) {
                     let status = Command::new(&program)
+                        .arg0(command) // argv[0] = command as typed, not the resolved path
                         .args(&args)
                         .status();
                     // If spawning failed, treat it as a not-found command.
