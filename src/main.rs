@@ -1,3 +1,4 @@
+use std::fs::OpenOptions;
 use std::io::{self, BufRead, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
@@ -40,13 +41,27 @@ fn main() {
         // For builtins (run in-process), the shell must still open redirect
         // target files at command time — even if the builtin writes nothing to
         // that stream. A real shell creates the file for `2>` regardless. This
-        // mirrors how external commands get their stdio opened below.
+        // mirrors how external commands get their stdio opened below. Append-mode
+        // operators must open the file in append mode so empty appends still
+        // create the file without truncating existing content.
         if is_builtin(command) {
             if let Some(p) = &redirect.stdout {
-                let _ = std::fs::File::create(p);
+                let mut opt = OpenOptions::new();
+                if redirect.stdout_append {
+                    opt.append(true).create(true);
+                } else {
+                    opt.write(true).create(true).truncate(true);
+                }
+                let _ = opt.open(p);
             }
             if let Some(p) = &redirect.stderr {
-                let _ = std::fs::File::create(p);
+                let mut opt = OpenOptions::new();
+                if redirect.stderr_append {
+                    opt.append(true).create(true);
+                } else {
+                    opt.write(true).create(true).truncate(true);
+                }
+                let _ = opt.open(p);
             }
         }
 
@@ -106,12 +121,24 @@ fn main() {
                     cmd.arg0(command) // argv[0] = command as typed, not the resolved path
                         .args(rest);
                     if let Some(path) = &redirect.stdout {
-                        if let Ok(file) = std::fs::File::create(path) {
+                        let mut opt = OpenOptions::new();
+                        if redirect.stdout_append {
+                            opt.append(true).create(true);
+                        } else {
+                            opt.write(true).create(true).truncate(true);
+                        }
+                        if let Ok(file) = opt.open(path) {
                             cmd.stdout(Stdio::from(file));
                         }
                     }
                     if let Some(path) = &redirect.stderr {
-                        if let Ok(file) = std::fs::File::create(path) {
+                        let mut opt = OpenOptions::new();
+                        if redirect.stderr_append {
+                            opt.append(true).create(true);
+                        } else {
+                            opt.write(true).create(true).truncate(true);
+                        }
+                        if let Ok(file) = opt.open(path) {
                             cmd.stderr(Stdio::from(file));
                         }
                     }
@@ -127,34 +154,52 @@ fn main() {
     }
 }
 
-/// Holds the stdout/stderr redirect targets parsed from a command line.
+/// Holds the stdout/stderr redirect targets parsed from a command line, along
+/// with whether each is in append mode (`>>`/`1>>`/`2>>`).
 struct Redirection {
     stdout: Option<String>,
+    stdout_append: bool,
     stderr: Option<String>,
+    stderr_append: bool,
 }
 
-/// Extracts redirection operators (`>`, `1>`, `2>`) from a token list.
+/// Extracts redirection operators (`>`, `1>`, `2>`, `>>`, `1>>`, `2>>`) from a
+/// token list.
 ///
 /// Returns the tokens with each redirect operator and its filename removed,
-/// plus any stdout/stderr target file paths. Only the FIRST occurrence of each
-/// operator is honored. `<` and `>>` are handled by later stages.
+/// plus the resolved targets. Only the FIRST occurrence of each operator is
+/// honored. `<` is handled by a later stage.
 fn parse_redirections(args: &[String]) -> (Vec<String>, Redirection) {
     let mut out: Vec<String> = Vec::new();
-    let mut redir = Redirection { stdout: None, stderr: None };
+    let mut redir = Redirection {
+        stdout: None,
+        stdout_append: false,
+        stderr: None,
+        stderr_append: false,
+    };
     let mut i = 0;
     while i < args.len() {
         let a = &args[i];
-        let target = if (a == ">" || a == "1>") && i + 1 < args.len() {
-            &mut redir.stdout
+        if (a == ">" || a == "1>") && i + 1 < args.len() {
+            redir.stdout = Some(args[i + 1].clone());
+            redir.stdout_append = false;
+            i += 2;
+        } else if (a == ">>" || a == "1>>") && i + 1 < args.len() {
+            redir.stdout = Some(args[i + 1].clone());
+            redir.stdout_append = true;
+            i += 2;
         } else if a == "2>" && i + 1 < args.len() {
-            &mut redir.stderr
+            redir.stderr = Some(args[i + 1].clone());
+            redir.stderr_append = false;
+            i += 2;
+        } else if a == "2>>" && i + 1 < args.len() {
+            redir.stderr = Some(args[i + 1].clone());
+            redir.stderr_append = true;
+            i += 2;
         } else {
             out.push(a.clone());
             i += 1;
-            continue;
-        };
-        *target = Some(args[i + 1].clone());
-        i += 2; // skip operator and its filename
+        }
     }
     (out, redir)
 }
@@ -166,7 +211,13 @@ fn parse_redirections(args: &[String]) -> (Vec<String>, Redirection) {
 fn emit(text: &str, redirect: &Redirection) {
     match &redirect.stdout {
         Some(path) => {
-            if let Ok(mut f) = std::fs::File::create(path) {
+            let mut opt = OpenOptions::new();
+            if redirect.stdout_append {
+                opt.append(true).create(true);
+            } else {
+                opt.write(true).create(true).truncate(true);
+            }
+            if let Ok(mut f) = opt.open(path) {
                 let _ = writeln!(f, "{}", text);
             }
         }
