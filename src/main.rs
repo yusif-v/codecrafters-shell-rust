@@ -2,7 +2,7 @@ use std::io::{self, BufRead, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 fn main() {
     let stdin = io::stdin();
@@ -24,29 +24,32 @@ fn main() {
             continue;
         }
 
-        // Tokenize the input respecting single quotes. Quoted segments keep
-        // their internal whitespace and are concatenated with adjacent
-        // segments (quoted or not) into a single argument.
+        // Tokenize the input respecting quotes/escapes; then strip redirection
+        // operators (>, 1>) which are shell syntax, not program arguments.
         let args = tokenize(input);
         if args.is_empty() {
             continue;
         }
-        let command = args[0].as_str();
-        let rest = &args[1..];
+        let (cmd_args, stdout_redirect) = parse_redirections(&args);
+        if cmd_args.is_empty() {
+            continue;
+        }
+        let command = cmd_args[0].as_str();
+        let rest = &cmd_args[1..];
 
-        // Builtins are handled directly by the shell.
+        // Builtins are handled directly by the shell. Builtins produce output as
+        // a String so it can be redirected to a file like external programs.
         match command {
             "exit" => break,
             "echo" => {
-                // Arguments are already correctly delimited; join with a space.
-                println!("{}", rest.join(" "));
+                emit(&rest.join(" "), &stdout_redirect);
             }
             "pwd" => {
-                // Print the absolute path of the current working directory.
-                match std::env::current_dir() {
-                    Ok(dir) => println!("{}", dir.display()),
-                    Err(_) => println!("pwd: error retrieving current directory"),
-                }
+                let out = match std::env::current_dir() {
+                    Ok(dir) => dir.display().to_string(),
+                    Err(_) => "pwd: error retrieving current directory".to_string(),
+                };
+                emit(&out, &stdout_redirect);
             }
             "cd" => {
                 // Change the current working directory.
@@ -73,24 +76,31 @@ fn main() {
                 }
             }
             "type" => {
-                // Report how the given command would be interpreted.
                 let target = rest.first().map(|s| s.as_str()).unwrap_or("");
-                if is_builtin(target) {
-                    println!("{} is a shell builtin", target);
+                let out = if is_builtin(target) {
+                    format!("{} is a shell builtin", target)
                 } else if let Some(full_path) = find_executable(target) {
-                    println!("{} is {}", target, full_path);
+                    format!("{} is {}", target, full_path)
                 } else {
-                    println!("{}: not found", target);
-                }
+                    format!("{}: not found", target)
+                };
+                emit(&out, &stdout_redirect);
             }
             // Non-builtin commands: try to run an external program.
             _ => {
                 if let Some(program) = find_executable(command) {
-                    let status = Command::new(&program)
-                        .arg0(command) // argv[0] = command as typed, not the resolved path
-                        .args(rest)
-                        .status();
-                    // If spawning failed, treat it as a not-found command.
+                    let mut cmd = Command::new(&program);
+                    cmd.arg0(command) // argv[0] = command as typed, not the resolved path
+                        .args(rest);
+                    if let Some(path) = &stdout_redirect {
+                        match std::fs::File::create(path) {
+                            Ok(file) => {
+                                cmd.stdout(Stdio::from(file));
+                            }
+                            Err(_) => { /* fall through to terminal on open error */ }
+                        }
+                    }
+                    let status = cmd.status();
                     if status.is_err() {
                         println!("{}: command not found", command);
                     }
@@ -99,6 +109,42 @@ fn main() {
                 }
             }
         }
+    }
+}
+
+/// Extracts stdout redirection (`>` or `1>`) from a token list.
+///
+/// Returns the tokens with the redirection operator and its filename removed,
+/// plus the optional target file path. `2>` and other operators are ignored
+/// here (handled by later stages). Only the FIRST `>`/`1>` is honored.
+fn parse_redirections(args: &[String]) -> (Vec<String>, Option<String>) {
+    let mut out: Vec<String> = Vec::new();
+    let mut redirect: Option<String> = None;
+    let mut i = 0;
+    while i < args.len() {
+        let a = &args[i];
+        if (a == ">" || a == "1>") && i + 1 < args.len() {
+            redirect = Some(args[i + 1].clone());
+            i += 2; // skip operator and its filename
+            continue;
+        }
+        out.push(a.clone());
+        i += 1;
+    }
+    (out, redirect)
+}
+
+/// Writes `text` followed by a newline. If `redirect` is set, the output goes to
+/// that file (truncating/creating it); otherwise it goes to the terminal.
+fn emit(text: &str, redirect: &Option<String>) {
+    match redirect {
+        Some(path) => {
+            // Errors opening the file are ignored; output simply doesn't appear.
+            if let Ok(mut f) = std::fs::File::create(path) {
+                let _ = writeln!(f, "{}", text);
+            }
+        }
+        None => println!("{}", text),
     }
 }
 
