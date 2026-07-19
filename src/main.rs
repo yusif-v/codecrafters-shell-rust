@@ -423,6 +423,7 @@ fn executables_starting_with(partial: &str) -> Vec<String> {
             }
         }
     }
+    found.sort();
     found
 }
 
