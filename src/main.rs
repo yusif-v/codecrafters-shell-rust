@@ -1,7 +1,7 @@
 use std::io::{self, BufRead, Write};
 use std::os::unix::fs::PermissionsExt;
-use std::path::Path;
 use std::os::unix::process::CommandExt;
+use std::path::Path;
 use std::process::Command;
 
 fn main() {
@@ -24,17 +24,22 @@ fn main() {
             continue;
         }
 
-        // Treat the first whitespace-separated token as the command.
-        let mut parts = input.split_whitespace();
-        let command = parts.next().unwrap();
+        // Tokenize the input respecting single quotes. Quoted segments keep
+        // their internal whitespace and are concatenated with adjacent
+        // segments (quoted or not) into a single argument.
+        let args = tokenize(input);
+        if args.is_empty() {
+            continue;
+        }
+        let command = args[0].as_str();
+        let rest = &args[1..];
 
         // Builtins are handled directly by the shell.
         match command {
             "exit" => break,
             "echo" => {
-                // Print the remaining arguments joined by single spaces.
-                let args: Vec<&str> = parts.collect();
-                println!("{}", args.join(" "));
+                // Arguments are already correctly delimited; join with a space.
+                println!("{}", rest.join(" "));
             }
             "pwd" => {
                 // Print the absolute path of the current working directory.
@@ -45,7 +50,7 @@ fn main() {
             }
             "cd" => {
                 // Change the current working directory.
-                let target = parts.next().unwrap_or("");
+                let target = rest.first().map(|s| s.as_str()).unwrap_or("");
                 if target.is_empty() {
                     // No argument: behave as a no-op (real shells go home; not
                     // required by this stage).
@@ -54,9 +59,9 @@ fn main() {
                 // Expand a leading ~ (and ~/...) to the user's home directory.
                 let resolved = if target == "~" {
                     home_dir().unwrap_or_else(|| target.to_string())
-                } else if let Some(rest) = target.strip_prefix("~/") {
+                } else if let Some(rest_dir) = target.strip_prefix("~/") {
                     match home_dir() {
-                        Some(home) => format!("{}/{}", home, rest),
+                        Some(home) => format!("{}/{}", home, rest_dir),
                         None => target.to_string(),
                     }
                 } else {
@@ -69,7 +74,7 @@ fn main() {
             }
             "type" => {
                 // Report how the given command would be interpreted.
-                let target = parts.next().unwrap_or("");
+                let target = rest.first().map(|s| s.as_str()).unwrap_or("");
                 if is_builtin(target) {
                     println!("{} is a shell builtin", target);
                 } else if let Some(full_path) = find_executable(target) {
@@ -80,11 +85,10 @@ fn main() {
             }
             // Non-builtin commands: try to run an external program.
             _ => {
-                let args: Vec<&str> = parts.collect();
                 if let Some(program) = find_executable(command) {
                     let status = Command::new(&program)
                         .arg0(command) // argv[0] = command as typed, not the resolved path
-                        .args(&args)
+                        .args(rest)
                         .status();
                     // If spawning failed, treat it as a not-found command.
                     if status.is_err() {
@@ -96,6 +100,50 @@ fn main() {
             }
         }
     }
+}
+
+/// Splits a command line into arguments, honoring single quotes.
+///
+/// Whitespace outside quotes delimits arguments. Inside single quotes, every
+/// character is literal (spaces, $, *, ~ all lose special meaning). Adjacent
+/// quoted/unquoted segments concatenate into one argument; empty quotes ('')
+/// contribute nothing.
+fn tokenize(input: &str) -> Vec<String> {
+    let mut args: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut in_single_quote = false;
+
+    for ch in input.chars() {
+        if in_single_quote {
+            if ch == '\'' {
+                // End of a quoted segment.
+                in_single_quote = false;
+            } else {
+                // Everything inside single quotes is literal.
+                current.push(ch);
+            }
+        } else {
+            match ch {
+                '\'' => {
+                    // Begin a quoted segment.
+                    in_single_quote = true;
+                }
+                c if c.is_whitespace() => {
+                    // Whitespace ends the current argument (if non-empty).
+                    if !current.is_empty() {
+                        args.push(std::mem::take(&mut current));
+                    }
+                }
+                _ => current.push(ch),
+            }
+        }
+    }
+
+    // Flush any trailing argument.
+    if !current.is_empty() {
+        args.push(current);
+    }
+    args
 }
 
 /// Returns the user's home directory as a string, read from the HOME
@@ -111,6 +159,8 @@ fn home_dir() -> Option<String> {
         .map(|u| format!("/Users/{}", u))
         .filter(|p| Path::new(p).is_dir())
 }
+
+/// Returns true if the given command name is a shell builtin.
 fn is_builtin(command: &str) -> bool {
     matches!(command, "echo" | "exit" | "type" | "pwd" | "cd")
 }
