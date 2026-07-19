@@ -1,156 +1,225 @@
 use std::fs::OpenOptions;
-use std::io::{self, BufRead, Write};
+use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-fn main() {
-    let stdin = io::stdin();
-    let mut stdout = io::stdout();
+use rustyline::completion::{Completer, Pair};
+use rustyline::error::ReadlineError;
+use rustyline::highlight::Highlighter;
+use rustyline::hint::Hinter;
+use rustyline::history::DefaultHistory;
+use rustyline::validate::Validator;
+use rustyline::{Context, Editor, Helper};
+
+/// All builtin command names. Used by `type`, the dispatcher, and (later)
+/// completion.
+const BUILTINS: &[&str] = &["echo", "exit", "type", "pwd", "cd"];
+
+fn main() -> Result<(), ReadlineError> {
+    let mut rl = Editor::<ShellHelper, DefaultHistory>::new()?;
+    let helper = ShellHelper {
+        builtins: BUILTINS.to_vec(),
+    };
+    rl.set_helper(Some(helper));
 
     loop {
-        // Display the prompt (from the previous stage)
-        print!("$ ");
-        stdout.flush().unwrap();
-
-        // Read the user's input
-        let mut input = String::new();
-        if stdin.lock().read_line(&mut input).unwrap() == 0 {
-            break; // EOF
-        }
-
-        let input = input.trim();
-        if input.is_empty() {
-            continue;
-        }
-
-        // Tokenize the input respecting quotes/escapes; then strip redirection
-        // operators (>, 1>) which are shell syntax, not program arguments.
-        let args = tokenize(input);
-        if args.is_empty() {
-            continue;
-        }
-        let (cmd_args, redirect) = parse_redirections(&args);
-        if cmd_args.is_empty() {
-            continue;
-        }
-        let command = cmd_args[0].as_str();
-        let rest = &cmd_args[1..];
-
-        // For builtins (run in-process), the shell must still open redirect
-        // target files at command time — even if the builtin writes nothing to
-        // that stream. A real shell creates the file for `2>` regardless. This
-        // mirrors how external commands get their stdio opened below. Append-mode
-        // operators must open the file in append mode so empty appends still
-        // create the file without truncating existing content.
-        if is_builtin(command) {
-            if let Some(p) = &redirect.stdout {
-                let mut opt = OpenOptions::new();
-                if redirect.stdout_append {
-                    opt.append(true).create(true);
-                } else {
-                    opt.write(true).create(true).truncate(true);
-                }
-                let _ = opt.open(p);
-            }
-            if let Some(p) = &redirect.stderr {
-                let mut opt = OpenOptions::new();
-                if redirect.stderr_append {
-                    opt.append(true).create(true);
-                } else {
-                    opt.write(true).create(true).truncate(true);
-                }
-                let _ = opt.open(p);
-            }
-        }
-
-        // Builtins are handled directly by the shell. Builtins produce output as
-        // a String so it can be redirected to a file like external programs.
-        match command {
-            "exit" => break,
-            "echo" => {
-                emit(&rest.join(" "), &redirect);
-            }
-            "pwd" => {
-                let out = match std::env::current_dir() {
-                    Ok(dir) => dir.display().to_string(),
-                    Err(_) => "pwd: error retrieving current directory".to_string(),
-                };
-                emit(&out, &redirect);
-            }
-            "cd" => {
-                // Change the current working directory.
-                let target = rest.first().map(|s| s.as_str()).unwrap_or("");
-                if target.is_empty() {
-                    // No argument: behave as a no-op (real shells go home; not
-                    // required by this stage).
+        // The prompt is drawn by rustyline itself. TAB triggers our Completer.
+        match rl.readline("$ ") {
+            Ok(line) => {
+                let line = line.trim();
+                if line.is_empty() {
                     continue;
                 }
-                // Expand a leading ~ (and ~/...) to the user's home directory.
-                let resolved = if target == "~" {
-                    home_dir().unwrap_or_else(|| target.to_string())
-                } else if let Some(rest_dir) = target.strip_prefix("~/") {
-                    match home_dir() {
-                        Some(home) => format!("{}/{}", home, rest_dir),
-                        None => target.to_string(),
-                    }
-                } else {
-                    target.to_string()
-                };
-                match std::env::set_current_dir(&resolved) {
-                    Ok(()) => {}
-                    Err(_) => println!("cd: {}: No such file or directory", target),
-                }
+                run_command(line);
             }
-            "type" => {
-                let target = rest.first().map(|s| s.as_str()).unwrap_or("");
-                let out = if is_builtin(target) {
-                    format!("{} is a shell builtin", target)
-                } else if let Some(full_path) = find_executable(target) {
-                    format!("{} is {}", target, full_path)
-                } else {
-                    format!("{}: not found", target)
-                };
-                emit(&out, &redirect);
-            }
-            // Non-builtin commands: try to run an external program.
-            _ => {
-                if let Some(program) = find_executable(command) {
-                    let mut cmd = Command::new(&program);
-                    cmd.arg0(command) // argv[0] = command as typed, not the resolved path
-                        .args(rest);
-                    if let Some(path) = &redirect.stdout {
-                        let mut opt = OpenOptions::new();
-                        if redirect.stdout_append {
-                            opt.append(true).create(true);
-                        } else {
-                            opt.write(true).create(true).truncate(true);
-                        }
-                        if let Ok(file) = opt.open(path) {
-                            cmd.stdout(Stdio::from(file));
-                        }
-                    }
-                    if let Some(path) = &redirect.stderr {
-                        let mut opt = OpenOptions::new();
-                        if redirect.stderr_append {
-                            opt.append(true).create(true);
-                        } else {
-                            opt.write(true).create(true).truncate(true);
-                        }
-                        if let Ok(file) = opt.open(path) {
-                            cmd.stderr(Stdio::from(file));
-                        }
-                    }
-                    let status = cmd.status();
-                    if status.is_err() {
-                        println!("{}: command not found", command);
-                    }
-                } else {
-                    println!("{}: command not found", command);
-                }
+            Err(ReadlineError::Interrupted) | Err(ReadlineError::Eof) => break,
+            Err(err) => {
+                eprintln!("error: {:?}", err);
+                break;
             }
         }
+    }
+    Ok(())
+}
+
+/// Executes one already-trimmed command line: tokenize, strip redirections,
+/// dispatch builtins or spawn an external program.
+fn run_command(input: &str) {
+    let args = tokenize(input);
+    if args.is_empty() {
+        return;
+    }
+    let (cmd_args, redirect) = parse_redirections(&args);
+    if cmd_args.is_empty() {
+        return;
+    }
+    let command = cmd_args[0].as_str();
+    let rest = &cmd_args[1..];
+
+    // For builtins (run in-process), the shell must still open redirect
+    // target files at command time — even if the builtin writes nothing to
+    // that stream. A real shell creates the file for `2>` regardless. This
+    // mirrors how external commands get their stdio opened below. Append-mode
+    // operators must open the file in append mode so empty appends still
+    // create the file without truncating existing content.
+    if is_builtin(command) {
+        if let Some(p) = &redirect.stdout {
+            let mut opt = OpenOptions::new();
+            if redirect.stdout_append {
+                opt.append(true).create(true);
+            } else {
+                opt.write(true).create(true).truncate(true);
+            }
+            let _ = opt.open(p);
+        }
+        if let Some(p) = &redirect.stderr {
+            let mut opt = OpenOptions::new();
+            if redirect.stderr_append {
+                opt.append(true).create(true);
+            } else {
+                opt.write(true).create(true).truncate(true);
+            }
+            let _ = opt.open(p);
+        }
+    }
+
+    // Builtins are handled directly by the shell. Builtins produce output as
+    // a String so it can be redirected to a file like external programs.
+    match command {
+        "exit" => std::process::exit(0),
+        "echo" => {
+            emit(&rest.join(" "), &redirect);
+        }
+        "pwd" => {
+            let out = match std::env::current_dir() {
+                Ok(dir) => dir.display().to_string(),
+                Err(_) => "pwd: error retrieving current directory".to_string(),
+            };
+            emit(&out, &redirect);
+        }
+        "cd" => {
+            // Change the current working directory.
+            let target = rest.first().map(|s| s.as_str()).unwrap_or("");
+            if target.is_empty() {
+                // No argument: behave as a no-op (real shells go home; not
+                // required by this stage).
+                return;
+            }
+            // Expand a leading ~ (and ~/...) to the user's home directory.
+            let resolved = if target == "~" {
+                home_dir().unwrap_or_else(|| target.to_string())
+            } else if let Some(rest_dir) = target.strip_prefix("~/") {
+                match home_dir() {
+                    Some(home) => format!("{}/{}", home, rest_dir),
+                    None => target.to_string(),
+                }
+            } else {
+                target.to_string()
+            };
+            match std::env::set_current_dir(&resolved) {
+                Ok(()) => {}
+                Err(_) => println!("cd: {}: No such file or directory", target),
+            }
+        }
+        "type" => {
+            let target = rest.first().map(|s| s.as_str()).unwrap_or("");
+            let out = if is_builtin(target) {
+                format!("{} is a shell builtin", target)
+            } else if let Some(full_path) = find_executable(target) {
+                format!("{} is {}", target, full_path)
+            } else {
+                format!("{}: not found", target)
+            };
+            emit(&out, &redirect);
+        }
+        // Non-builtin commands: try to run an external program.
+        _ => {
+            if let Some(program) = find_executable(command) {
+                let mut cmd = Command::new(&program);
+                cmd.arg0(command) // argv[0] = command as typed, not the resolved path
+                    .args(rest);
+                if let Some(path) = &redirect.stdout {
+                    let mut opt = OpenOptions::new();
+                    if redirect.stdout_append {
+                        opt.append(true).create(true);
+                    } else {
+                        opt.write(true).create(true).truncate(true);
+                    }
+                    if let Ok(file) = opt.open(path) {
+                        cmd.stdout(Stdio::from(file));
+                    }
+                }
+                if let Some(path) = &redirect.stderr {
+                    let mut opt = OpenOptions::new();
+                    if redirect.stderr_append {
+                        opt.append(true).create(true);
+                    } else {
+                        opt.write(true).create(true).truncate(true);
+                    }
+                    if let Ok(file) = opt.open(path) {
+                        cmd.stderr(Stdio::from(file));
+                    }
+                }
+                let status = cmd.status();
+                if status.is_err() {
+                    println!("{}: command not found", command);
+                }
+            } else {
+                println!("{}: command not found", command);
+            }
+        }
+    }
+}
+
+/// rustyline helper providing TAB completion for builtin command names.
+struct ShellHelper {
+    builtins: Vec<&'static str>,
+}
+
+impl Helper for ShellHelper {}
+
+impl Hinter for ShellHelper {
+    type Hint = String;
+}
+
+impl Highlighter for ShellHelper {}
+
+impl Validator for ShellHelper {}
+
+impl Completer for ShellHelper {
+    type Candidate = Pair;
+
+    fn complete(
+        &self,
+        line: &str,
+        pos: usize,
+        _ctx: &Context<'_>,
+    ) -> Result<(usize, Vec<Pair>), ReadlineError> {
+        // Only complete the FIRST word (the command name). If the cursor is
+        // past a space we're already typing arguments — don't complete.
+        let before = &line[..pos];
+        let word_start = before
+            .rfind(char::is_whitespace)
+            .map(|i| i + 1)
+            .unwrap_or(0);
+        if word_start != 0 {
+            return Ok((pos, vec![]));
+        }
+        let partial = &before[word_start..];
+
+        let candidates: Vec<Pair> = self
+            .builtins
+            .iter()
+            .filter(|b| b.starts_with(partial))
+            .map(|b| Pair {
+                display: (*b).to_string(),
+                replacement: format!("{} ", b),
+            })
+            .collect();
+
+        Ok((word_start, candidates))
     }
 }
 
@@ -319,7 +388,7 @@ fn home_dir() -> Option<String> {
 
 /// Returns true if the given command name is a shell builtin.
 fn is_builtin(command: &str) -> bool {
-    matches!(command, "echo" | "exit" | "type" | "pwd" | "cd")
+    BUILTINS.contains(&command)
 }
 
 /// Searches the directories listed in PATH for an executable file matching
