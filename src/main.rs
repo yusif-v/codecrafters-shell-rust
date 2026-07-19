@@ -122,7 +122,10 @@ fn tokenize(input: &str) -> Vec<String> {
     let mut current = String::new();
     let mut quote = QuoteState::None;
 
-    for ch in input.chars() {
+    let chars: Vec<char> = input.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        let ch = chars[i];
         match quote {
             QuoteState::Single => {
                 if ch == '\'' {
@@ -141,6 +144,14 @@ fn tokenize(input: &str) -> Vec<String> {
             QuoteState::None => match ch {
                 '\'' => quote = QuoteState::Single,
                 '"' => quote = QuoteState::Double,
+                '\\' => {
+                    // Backslash escapes the next character (outside quotes).
+                    // The backslash is discarded; the escaped char is literal.
+                    if i + 1 < chars.len() {
+                        i += 1;
+                        current.push(chars[i]);
+                    }
+                }
                 c if c.is_whitespace() => {
                     if !current.is_empty() {
                         args.push(std::mem::take(&mut current));
@@ -149,6 +160,7 @@ fn tokenize(input: &str) -> Vec<String> {
                 _ => current.push(ch),
             },
         }
+        i += 1;
     }
 
     // Flush any trailing argument.
