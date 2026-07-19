@@ -209,7 +209,7 @@ impl Completer for ShellHelper {
         }
         let partial = &before[word_start..];
 
-        let candidates: Vec<Pair> = self
+        let mut candidates: Vec<Pair> = self
             .builtins
             .iter()
             .filter(|b| b.starts_with(partial))
@@ -218,6 +218,14 @@ impl Completer for ShellHelper {
                 replacement: format!("{} ", b),
             })
             .collect();
+
+        // Also offer external executables found in PATH.
+        for exe in executables_starting_with(partial) {
+            candidates.push(Pair {
+                display: exe.clone(),
+                replacement: format!("{} ", exe),
+            });
+        }
 
         Ok((word_start, candidates))
     }
@@ -389,6 +397,33 @@ fn home_dir() -> Option<String> {
 /// Returns true if the given command name is a shell builtin.
 fn is_builtin(command: &str) -> bool {
     BUILTINS.contains(&command)
+}
+
+/// Lists executable file names in PATH whose names start with `partial`.
+/// Used for TAB completion of external commands. Non-existent directories are
+/// skipped gracefully. Results are de-duplicated.
+fn executables_starting_with(partial: &str) -> Vec<String> {
+    let mut found: Vec<String> = Vec::new();
+    let path_var = std::env::var("PATH").unwrap_or_default();
+    for dir in path_var.split(':') {
+        if dir.is_empty() {
+            continue;
+        }
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            continue; // directory may not exist; skip
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if !name.starts_with(partial) {
+                continue;
+            }
+            if is_executable(&entry.path()) && !found.iter().any(|f| f == name.as_ref()) {
+                found.push(name.to_string());
+            }
+        }
+    }
+    found
 }
 
 /// Searches the directories listed in PATH for an executable file matching
