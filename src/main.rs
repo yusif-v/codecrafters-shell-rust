@@ -36,6 +36,13 @@ fn main() {
                 let args: Vec<&str> = parts.collect();
                 println!("{}", args.join(" "));
             }
+            "pwd" => {
+                // Print the absolute path of the current working directory.
+                match std::env::current_dir() {
+                    Ok(dir) => println!("{}", dir.display()),
+                    Err(_) => println!("pwd: error retrieving current directory"),
+                }
+            }
             "type" => {
                 // Report how the given command would be interpreted.
                 let target = parts.next().unwrap_or("");
@@ -69,7 +76,7 @@ fn main() {
 
 /// Returns true if the given command name is a shell builtin.
 fn is_builtin(command: &str) -> bool {
-    matches!(command, "echo" | "exit" | "type")
+    matches!(command, "echo" | "exit" | "type" | "pwd")
 }
 
 /// Searches the directories listed in PATH for an executable file matching
