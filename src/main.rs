@@ -197,22 +197,41 @@ impl Completer for ShellHelper {
         pos: usize,
         _ctx: &Context<'_>,
     ) -> Result<(usize, Vec<Pair>), ReadlineError> {
-        // Only complete the FIRST word (the command name). If the cursor is
-        // past a space we're already typing arguments — don't complete.
-        // A trailing space left by a previous TAB is trimmed so detection still
-        // works on the second TAB press.
+        // Where are we completing? If the cursor is past a space we're
+        // typing an argument -> complete filenames in the current directory.
+        // Otherwise we're typing the command name -> builtins + PATH.
         let line_trimmed = line.trim_end();
         let before = &line_trimmed[..pos.min(line_trimmed.len())];
         let word_start = before
             .rfind(char::is_whitespace)
             .map(|i| i + 1)
             .unwrap_or(0);
-        if word_start != 0 {
-            return Ok((pos, vec![]));
-        }
         let partial = &before[word_start..];
 
-        // Collect all matching command names: builtins + PATH executables.
+        if word_start != 0 {
+            // Argument context: complete a single matching file in the CWD.
+            let mut files: Vec<String> = Vec::new();
+            if let Ok(entries) = std::fs::read_dir(".") {
+                for entry in entries.flatten() {
+                    if let Some(name) = entry.file_name().to_str() {
+                        if name.starts_with(partial) {
+                            files.push(name.to_string());
+                        }
+                    }
+                }
+            }
+            if files.len() == 1 {
+                let candidates = vec![Pair {
+                    display: files[0].clone(),
+                    replacement: format!("{} ", files[0]),
+                }];
+                return Ok((word_start, candidates));
+            }
+            // No single file match: leave the line unchanged.
+            return Ok((word_start, vec![]));
+        }
+
+        // Command-name context: collect all matching builtins + PATH executables.
         let mut names: Vec<String> = self
             .builtins
             .iter()
