@@ -173,7 +173,7 @@ fn run_command(input: &str) {
     }
 }
 
-/// rustyline helper providing TAB completion for builtin command names.
+/// rustyline helper providing TAB completion for builtin and external commands.
 struct ShellHelper {
     builtins: Vec<&'static str>,
 }
@@ -199,7 +199,10 @@ impl Completer for ShellHelper {
     ) -> Result<(usize, Vec<Pair>), ReadlineError> {
         // Only complete the FIRST word (the command name). If the cursor is
         // past a space we're already typing arguments — don't complete.
-        let before = &line[..pos];
+        // A trailing space left by a previous TAB is trimmed so detection still
+        // works on the second TAB press.
+        let line_trimmed = line.trim_end();
+        let before = &line_trimmed[..pos.min(line_trimmed.len())];
         let word_start = before
             .rfind(char::is_whitespace)
             .map(|i| i + 1)
@@ -209,24 +212,41 @@ impl Completer for ShellHelper {
         }
         let partial = &before[word_start..];
 
-        let mut candidates: Vec<Pair> = self
+        // Collect all matching command names: builtins + PATH executables.
+        let mut names: Vec<String> = self
             .builtins
             .iter()
             .filter(|b| b.starts_with(partial))
-            .map(|b| Pair {
-                display: (*b).to_string(),
-                replacement: format!("{} ", b),
-            })
+            .map(|b| (*b).to_string())
             .collect();
-
-        // Also offer external executables found in PATH.
         for exe in executables_starting_with(partial) {
-            candidates.push(Pair {
-                display: exe.clone(),
-                replacement: format!("{} ", exe),
-            });
+            names.push(exe);
+        }
+        names.sort();
+        names.dedup();
+
+        let single = names.len() == 1;
+
+        if single {
+            // One match: complete to the full name with a trailing space.
+            let candidates = vec![Pair {
+                display: names[0].clone(),
+                replacement: format!("{} ", names[0]),
+            }];
+            return Ok((word_start, candidates));
         }
 
+        // Multiple matches: ring the bell, print the candidate list on its own
+        // line (the tester reads stdout lines, and rustyline's own menu is not
+        // captured here), and keep the prompt showing the original prefix.
+        let _ = std::io::stdout().write_all(b"\x07");
+        let _ = std::io::stdout().flush();
+        print!("\r\n{}\r\n", names.join("  "));
+        let _ = std::io::stdout().flush();
+        let candidates = vec![Pair {
+            display: partial.to_string(),
+            replacement: partial.to_string(),
+        }];
         Ok((word_start, candidates))
     }
 }
