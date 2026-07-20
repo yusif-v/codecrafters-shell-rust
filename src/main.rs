@@ -225,6 +225,18 @@ impl Completer for ShellHelper {
         names.sort();
         names.dedup();
 
+        // No matches (invalid command): ring the bell and leave the line
+        // unchanged.
+        if names.is_empty() {
+            let _ = std::io::stdout().write_all(b"\x07");
+            let _ = std::io::stdout().flush();
+            let candidates = vec![Pair {
+                display: partial.to_string(),
+                replacement: partial.to_string(),
+            }];
+            return Ok((word_start, candidates));
+        }
+
         let single = names.len() == 1;
 
         if single {
@@ -236,19 +248,56 @@ impl Completer for ShellHelper {
             return Ok((word_start, candidates));
         }
 
-        // Multiple matches: ring the bell, print the candidate list on its own
-        // line (the tester reads stdout lines, and rustyline's own menu is not
-        // captured here), and keep the prompt showing the original prefix.
+        // Multiple matches: compute the longest common prefix ourselves.
+        let lcp = longest_common_prefix(&names);
+        if lcp != partial {
+            // Strict common prefix (e.g. `xyz_` -> `xyz_foo/...`): insert
+            // it in-place. rustyline then re-invokes on the next TAB.
+            let candidates = vec![Pair {
+                display: lcp.clone(),
+                replacement: lcp,
+            }];
+            return Ok((word_start, candidates));
+        }
+
+        // No extra prefix (LCP == typed text): ring the bell, print the
+        // candidate list on its own line (rustyline's own menu is not
+        // captured by the tester, and it does not re-invoke `complete`
+        // on a no-op). Return a no-op candidate so the prompt
+        // `$ xyz_` stays unchanged.
         let _ = std::io::stdout().write_all(b"\x07");
         let _ = std::io::stdout().flush();
-        print!("\r\n{}\r\n", names.join("  "));
-        let _ = std::io::stdout().flush();
+        if !names.is_empty() {
+            print!("\r\n{}\r\n", names.join("  "));
+            let _ = std::io::stdout().flush();
+        }
         let candidates = vec![Pair {
             display: partial.to_string(),
             replacement: partial.to_string(),
         }];
         Ok((word_start, candidates))
     }
+}
+
+/// Returns the longest string that is a prefix of every element in `names`.
+fn longest_common_prefix(names: &[String]) -> String {
+    if names.is_empty() {
+        return String::new();
+    }
+    let mut lcp: String = names[0].chars().collect();
+    for n in &names[1..] {
+        let common: String = lcp
+            .chars()
+            .zip(n.chars())
+            .take_while(|(a, b)| a == b)
+            .map(|(a, _)| a)
+            .collect();
+        lcp = common;
+        if lcp.is_empty() {
+            break;
+        }
+    }
+    lcp
 }
 
 /// Holds the stdout/stderr redirect targets parsed from a command line, along
