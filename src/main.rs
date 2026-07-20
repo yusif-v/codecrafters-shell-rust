@@ -209,23 +209,42 @@ impl Completer for ShellHelper {
         let partial = &before[word_start..];
 
         if word_start != 0 {
-            // Argument context: complete a single matching file in the CWD.
+            // Argument context: complete files relative to current directory.
+            // Handles both simple names ("foo") and paths ("dir/sub/").
+            let (replace_start, dir, filename_part) = if partial.ends_with('/') {
+                // Trailing slash: complete directory contents
+                // replace_start = position after the slash (where filename goes)
+                // dir = the directory path, the part to preserve in output
+                (partial.len(), partial.to_string(), String::new())
+            } else if let Some(last_slash) = partial.rfind('/') {
+                // Path with prefix: split directory and filename prefix
+                // replace_start = position in line where filename starts (after last /)
+                // dir = the directory path to read
+                (last_slash + 1, partial[..last_slash + 1].to_string(), partial[last_slash + 1..].to_string())
+            } else {
+                // Simple filename in CWD
+                (0, ".".to_string(), partial.to_string())
+            };
+
             let mut files: Vec<String> = Vec::new();
-            if let Ok(entries) = std::fs::read_dir(".") {
+            if let Ok(entries) = std::fs::read_dir(&dir) {
                 for entry in entries.flatten() {
                     if let Some(name) = entry.file_name().to_str() {
-                        if name.starts_with(partial) {
+                        if name.starts_with(&filename_part) {
+                            // Return the filename to insert after the directory prefix
                             files.push(name.to_string());
                         }
                     }
                 }
             }
             if files.len() == 1 {
+                // Calculate the actual replacement position in the line
+                let actual_start = word_start + replace_start;
                 let candidates = vec![Pair {
                     display: files[0].clone(),
                     replacement: format!("{} ", files[0]),
                 }];
-                return Ok((word_start, candidates));
+                return Ok((actual_start, candidates));
             }
             // No single file match: leave the line unchanged.
             return Ok((word_start, vec![]));
