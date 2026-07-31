@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
@@ -29,6 +30,7 @@ fn main() -> Result<(), ReadlineError> {
     let mut rl = Editor::<ShellHelper, DefaultHistory>::with_config(config)?;
     let helper = ShellHelper {
         builtins: BUILTINS.to_vec(),
+        last_arg_complete: RefCell::new(None),
     };
     rl.set_helper(Some(helper));
 
@@ -184,6 +186,10 @@ fn run_command(input: &str) {
 /// rustyline helper providing TAB completion for builtin and external commands.
 struct ShellHelper {
     builtins: Vec<&'static str>,
+    /// (cursor pos, full line) of the last argument-context completion whose
+    /// multiple matches we bell-ed for. Used to tell the first TAB (bell only)
+    /// apart from a subsequent TAB on an unchanged line (bell + listing).
+    last_arg_complete: RefCell<Option<(usize, String)>>,
 }
 
 impl Helper for ShellHelper {}
@@ -289,21 +295,29 @@ impl Completer for ShellHelper {
                     return Ok((word_start + replace_start, candidates));
                 }
                 // Otherwise ring the bell and list every match on its own line,
-                // leaving the input unchanged.
+                // leaving the input unchanged. The first TAB only rings the
+                // bell; a subsequent TAB on the same (unchanged) line prints
+                // the list.
+                let key = (pos, line.to_string());
+                let listed =
+                    self.last_arg_complete.borrow().as_ref() == Some(&key);
+                *self.last_arg_complete.borrow_mut() = Some(key);
                 let _ = std::io::stdout().write_all(b"\x07");
                 let _ = std::io::stdout().flush();
-                let listing: Vec<String> = sorted_files
-                    .iter()
-                    .map(|(n, is_dir)| {
-                        if *is_dir {
-                            format!("{}/", n)
-                        } else {
-                            n.clone()
-                        }
-                    })
-                    .collect();
-                print!("\r\n{}\r\n", listing.join("  "));
-                let _ = std::io::stdout().flush();
+                if listed {
+                    let listing: Vec<String> = sorted_files
+                        .iter()
+                        .map(|(n, is_dir)| {
+                            if *is_dir {
+                                format!("{}/", n)
+                            } else {
+                                n.clone()
+                            }
+                        })
+                        .collect();
+                    print!("\r\n{}\r\n", listing.join("  "));
+                    let _ = std::io::stdout().flush();
+                }
                 let display = &partial[replace_start..].to_string();
                 return Ok((word_start + replace_start, vec![Pair {
                     display: display.clone(),
