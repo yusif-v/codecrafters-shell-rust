@@ -6,6 +6,7 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 
 use rustyline::completion::{Completer, Pair};
+use rustyline::config::CompletionType;
 use rustyline::error::ReadlineError;
 use rustyline::highlight::Highlighter;
 use rustyline::hint::Hinter;
@@ -18,7 +19,14 @@ use rustyline::{Context, Editor, Helper};
 const BUILTINS: &[&str] = &["echo", "exit", "type", "pwd", "cd"];
 
 fn main() -> Result<(), ReadlineError> {
-    let mut rl = Editor::<ShellHelper, DefaultHistory>::new()?;
+    // "List" completion re-invokes our Completer on each TAB press (so a
+    // second TAB completes the next path segment). "Circular" (the default)
+    // would instead cycle through the previous TAB's candidates, which is
+    // useless for multi-level path completion.
+    let config = rustyline::config::Config::builder()
+        .completion_type(CompletionType::List)
+        .build();
+    let mut rl = Editor::<ShellHelper, DefaultHistory>::with_config(config)?;
     let helper = ShellHelper {
         builtins: BUILTINS.to_vec(),
     };
