@@ -1,14 +1,27 @@
+use std::process::Child;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 
-/// A background job tracked by the shell.
-#[derive(Clone)]
-pub struct Job {
+/// Whether a tracked background job is still running or has exited.
+#[derive(Clone, Copy, PartialEq)]
+pub enum JobStatus {
+    Running,
+    Done,
+}
+
+/// A snapshot of a background job, as reported by the `jobs` builtin.
+pub struct JobSnapshot {
     pub id: usize,
-    // Used once the shell reaps finished jobs (later stage).
-    #[allow(dead_code)]
-    pub pid: u32,
     pub command: String,
+    pub status: JobStatus,
+}
+
+/// A background job being tracked by the shell. The child handle lets the
+/// shell poll (without blocking) whether the process has exited yet.
+struct Job {
+    id: usize,
+    child: Child,
+    command: String,
 }
 
 /// Next job number to assign to a background job. Starts at 1 and increments
@@ -20,19 +33,42 @@ static NEXT_JOB_ID: AtomicUsize = AtomicUsize::new(1);
 static JOBS: OnceLock<Mutex<Vec<Job>>> = OnceLock::new();
 
 /// Adds a background job to the shell's job table and returns its job number.
-pub fn add_job(pid: u32, command: String) -> usize {
+pub fn add_job(child: Child, command: String) -> usize {
     let id = NEXT_JOB_ID.fetch_add(1, Ordering::SeqCst);
     JOBS.get_or_init(|| Mutex::new(Vec::new()))
         .lock()
         .unwrap()
-        .push(Job { id, pid, command });
+        .push(Job { id, child, command });
     id
 }
 
-/// The background jobs currently known to the shell, oldest first.
-pub fn list_jobs() -> Vec<Job> {
-    JOBS.get_or_init(|| Mutex::new(Vec::new()))
-        .lock()
-        .unwrap()
-        .clone()
+/// Checks every tracked job for completion and returns snapshots of all of
+/// them. Jobs that have exited are reported with status `Done` and removed
+/// from the table, so a later `jobs` call won't list them again.
+pub fn check_jobs() -> Vec<JobSnapshot> {
+    let mut list = JOBS.get_or_init(|| Mutex::new(Vec::new())).lock().unwrap();
+    let mut snapshots = Vec::with_capacity(list.len());
+    let mut done_indexes = Vec::new();
+    for (index, job) in list.iter_mut().enumerate() {
+        // Non-blocking check: Ok(Some(_)) means the child exited and was
+        // reaped; Ok(None) means it is still running.
+        let done = matches!(job.child.try_wait(), Ok(Some(_)));
+        if done {
+            done_indexes.push(index);
+        }
+        snapshots.push(JobSnapshot {
+            id: job.id,
+            command: job.command.clone(),
+            status: if done {
+                JobStatus::Done
+            } else {
+                JobStatus::Running
+            },
+        });
+    }
+    // Remove finished jobs (in reverse so indexes stay valid).
+    for index in done_indexes.into_iter().rev() {
+        list.remove(index);
+    }
+    snapshots
 }

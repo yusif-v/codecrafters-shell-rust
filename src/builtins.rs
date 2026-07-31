@@ -178,14 +178,13 @@ pub fn run_command(input: &str) {
                 }
             }
         }
-        // List every background job the shell has started. Jobs that are no
-        // longer known (e.g. done and reaped) simply don't appear. The most
-        // recently started job gets the `+` marker; others get `-`.
+        // List every background job the shell is tracking. Finished jobs are
+        // shown with status Done (and no trailing `&`), then dropped from the
+        // table so they don't appear in later calls. The most recently started
+        // job gets the `+` marker, the second most recent `-`, others a blank.
         "jobs" => {
-            let list = jobs::list_jobs();
+            let list = jobs::check_jobs();
             for (index, job) in list.iter().enumerate() {
-                // The most recently started job gets `+`, the second most
-                // recent gets `-`, and every other job a blank marker.
                 let marker = if index + 1 == list.len() {
                     "+"
                 } else if index + 2 == list.len() {
@@ -194,8 +193,16 @@ pub fn run_command(input: &str) {
                     " "
                 };
                 // Status is a fixed-width 24-char field; the command follows
-                // it directly ("Running" + 17 trailing spaces).
-                println!("[{}]{}  {:<24}{}", job.id, marker, "Running", job.command);
+                // it directly (e.g. "Running" + 17 trailing spaces).
+                let (status, command) = match job.status {
+                    jobs::JobStatus::Running => ("Running", job.command.as_str()),
+                    // Done entries omit the trailing `&` recorded at launch.
+                    jobs::JobStatus::Done => {
+                        let stripped = job.command.trim_end().trim_end_matches('&');
+                        ("Done", stripped.trim_end())
+                    }
+                };
+                println!("[{}]{}  {:<24}{}", job.id, marker, status, command);
             }
         }
         // Non-builtin commands: try to run an external program.
@@ -232,8 +239,9 @@ pub fn run_command(input: &str) {
                     // immediately.
                     match cmd.spawn() {
                         Ok(child) => {
-                            let id = jobs::add_job(child.id(), input.to_string());
-                            println!("[{}] {}", id, child.id());
+                            let pid = child.id();
+                            let id = jobs::add_job(child, input.to_string());
+                            println!("[{}] {}", id, pid);
                         }
                         Err(_) => println!("{}: command not found", command),
                     }
