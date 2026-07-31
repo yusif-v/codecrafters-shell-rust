@@ -295,11 +295,7 @@ impl Completer for ShellHelper {
                 // completed. The command name itself doesn't count, so when
                 // the current word is the first argument, pass an empty
                 // string.
-                let prev_word = if words_before.len() >= 2 {
-                    words_before[words_before.len() - 1]
-                } else {
-                    ""
-                };
+                let prev_word = words_before.last().copied().unwrap_or("");
                 let candidates: Vec<String> = match Command::new(&script)
                     .arg(command)
                     .arg(partial)
