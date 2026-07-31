@@ -22,8 +22,8 @@ use rustyline::{Context, Editor, Helper};
 const BUILTINS: &[&str] = &["echo", "exit", "type", "pwd", "cd", "complete"];
 
 /// Programmable completions registered via `complete`. Maps a command name to
-/// the registered specification (its printable `complete` args). The shell is
-/// single-threaded; the lock is only for safe shared access.
+/// its registered completer script path. The shell is single-threaded; the
+/// lock is only for safe shared access.
 static COMPLETIONS: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
 
 fn completions() -> &'static Mutex<HashMap<String, String>> {
@@ -155,13 +155,29 @@ fn run_command(input: &str) {
             };
             emit(&out, &redirect);
         }
-        // Programmable completion builtin. `complete -p <name>` prints the
-        // registered specification for <name>, or an error if none exists.
+        // Programmable completion builtin. `complete -C <script> <name>`
+        // registers a completer script for <name>; `complete -p <name>`
+        // prints the registered specification in normalized form, or an
+        // error if none exists.
         "complete" => {
             let mut args = rest.iter();
             while let Some(arg) = args.next() {
                 match arg.as_str() {
-                    // Print specifications for every following command name.
+                    // Register the following script path against every
+                    // command name that follows it.
+                    "-C" => {
+                        if let Some(script) = args.next() {
+                            let mut specs = completions().lock().unwrap();
+                            for name in args.by_ref() {
+                                if name.starts_with('-') {
+                                    break;
+                                }
+                                specs.insert(name.clone(), script.clone());
+                            }
+                        }
+                    }
+                    // Print the registered specification for every following
+                    // command name.
                     "-p" => {
                         let specs = completions().lock().unwrap();
                         for name in args.by_ref() {
@@ -169,7 +185,13 @@ fn run_command(input: &str) {
                                 break;
                             }
                             match specs.get(name) {
-                                Some(spec) => emit(spec, &redirect),
+                                Some(script) => emit(
+                                    &format!(
+                                        "complete -C '{}' {}",
+                                        script, name
+                                    ),
+                                    &redirect,
+                                ),
                                 None => emit(
                                     &format!(
                                         "complete: {}: no completion specification",
