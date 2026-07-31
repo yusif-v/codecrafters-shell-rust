@@ -222,6 +222,17 @@ fn run_command(input: &str) {
                             }
                         }
                     }
+                    // Remove the registered specification for every following
+                    // command name. Removing an unknown command is a no-op.
+                    "-r" => {
+                        let mut specs = completions().lock().unwrap();
+                        for name in args.by_ref() {
+                            if name.starts_with('-') {
+                                break;
+                            }
+                            specs.remove(name);
+                        }
+                    }
                     _ => {}
                 }
             }
