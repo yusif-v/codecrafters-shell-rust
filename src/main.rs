@@ -287,9 +287,25 @@ impl Completer for ShellHelper {
             // Argument context. If a programmable completion is registered for
             // the command, run its script and use the stdout lines as
             // candidates (replacing the current word).
-            let command = before[..word_start].split_whitespace().next().unwrap_or("");
+            let words_before: Vec<&str> =
+                before[..word_start].split_whitespace().collect();
+            let command = words_before.first().copied().unwrap_or("");
             if let Some(script) = completions().lock().unwrap().get(command).cloned() {
-                let candidates: Vec<String> = match Command::new(&script).output() {
+                // argv[3] is the word immediately before the one being
+                // completed. The command name itself doesn't count, so when
+                // the current word is the first argument, pass an empty
+                // string.
+                let prev_word = if words_before.len() >= 2 {
+                    words_before[words_before.len() - 1]
+                } else {
+                    ""
+                };
+                let candidates: Vec<String> = match Command::new(&script)
+                    .arg(command)
+                    .arg(partial)
+                    .arg(prev_word)
+                    .output()
+                {
                     Ok(output) => String::from_utf8_lossy(&output.stdout)
                         .lines()
                         .map(|s| s.trim().to_string())
