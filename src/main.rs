@@ -304,6 +304,12 @@ impl Completer for ShellHelper {
                     .arg(command)
                     .arg(partial)
                     .arg(prev_word)
+                    // COMP_LINE/COMP_POINT are set on the completer process
+                    // only (not persisted in the shell's own environment).
+                    // COMP_POINT is the zero-based byte index of the cursor
+                    // in the line.
+                    .env("COMP_LINE", line)
+                    .env("COMP_POINT", pos.to_string())
                     .output()
                 {
                     Ok(output) => String::from_utf8_lossy(&output.stdout)
