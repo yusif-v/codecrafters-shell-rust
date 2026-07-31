@@ -226,127 +226,145 @@ fn run_builtin(command: &str, rest: &[String], redirect: &Redirection) {
     }
 }
 
-/// Runs a two-command pipeline `left | right`: the left command's stdout feeds
-/// the right command's stdin. Redirections are applied per side; a stdout
-/// redirect on the left replaces the pipe, otherwise stdout is piped.
-/// Builtins run in-process; external commands are spawned as children.
-fn run_pipeline(left: &[String], right: &[String]) {
-    let (left_args, left_redir) = parse_redirections(left);
-    let (right_args, right_redir) = parse_redirections(right);
-    if left_args.is_empty() || right_args.is_empty() {
+/// Runs a pipeline of two or more commands `cmd1 | cmd2 | ... | cmdN`. Each
+/// command's stdout feeds the next command's stdin through an OS pipe (a
+/// stdout redirect on a command replaces its pipe). Redirections are applied
+/// per command. Builtins run in-process; external commands are spawned as
+/// children. After launching everything, children are waited on right-to-left
+/// so a downstream command that exits early (e.g. `head -n 5`) lets its
+/// upstream writer die of SIGPIPE instead of hanging the pipeline.
+fn run_pipeline(segments: &[&[String]]) {
+    // Parse redirections for every segment up front; an empty segment means
+    // malformed input, so bail out.
+    let mut parsed = Vec::with_capacity(segments.len());
+    for segment in segments {
+        let (cmd_args, redir) = parse_redirections(segment);
+        if cmd_args.is_empty() {
+            return;
+        }
+        parsed.push((cmd_args, redir));
+    }
+    let n = parsed.len();
+    if n < 2 {
         return;
     }
-    let left_cmd = &left_args[0];
-    let right_cmd = &right_args[0];
 
-    // OS pipe carrying the left command's stdout to the right command's stdin.
-    let (read_fd, write_fd) = create_pipe();
-
-    // Left side: builtins run in-process, externals are spawned.
-    let mut left_child: Option<std::process::Child> = None;
-    if is_builtin(left_cmd) {
-        if left_redir.stdout.is_some() {
-            // A stdout redirect replaces the pipe: the builtin writes to the
-            // file and the pipe carries nothing.
-            run_builtin(left_cmd, &left_args[1..], &left_redir);
-            unsafe { libc::close(write_fd) };
-        } else {
-            // Point the builtin's output at the pipe, then run it in-process.
-            run_builtin_into_pipe(left_cmd, &left_args[1..], &left_redir, write_fd);
-            unsafe { libc::close(write_fd) };
-        }
-    } else {
-        let Some(left_program) = find_executable(left_cmd) else {
-            println!("{}: command not found", left_cmd);
-            unsafe {
-                libc::close(read_fd);
-                libc::close(write_fd);
-            }
-            return;
-        };
-        let mut left = Command::new(&left_program);
-        left.arg0(left_cmd).args(&left_args[1..]);
-        if let Some(path) = &left_redir.stdout {
-            if let Some(file) = open_redirect(path, left_redir.stdout_append) {
-                left.stdout(Stdio::from(file));
-            }
-            unsafe { libc::close(write_fd) };
-        } else {
-            left.stdout(Stdio::from(unsafe { std::fs::File::from_raw_fd(write_fd) }));
-        }
-        if let Some(path) = &left_redir.stderr {
-            if let Some(file) = open_redirect(path, left_redir.stderr_append) {
-                left.stderr(Stdio::from(file));
-            }
-        }
-        match left.spawn() {
-            Ok(child) => {
-                left_child = Some(child);
-                // Close the parent's copy of the pipe write end.
-                drop(left);
-            }
-            Err(_) => {
-                println!("{}: command not found", left_cmd);
-                unsafe { libc::close(read_fd) };
-                return;
-            }
-        }
+    // One OS pipe between each adjacent pair of commands.
+    let mut pipes: Vec<(i32, i32)> = Vec::with_capacity(n - 1);
+    for _ in 0..n - 1 {
+        pipes.push(create_pipe());
     }
 
-    // Right side: builtins run in-process (they don't read stdin), externals
-    // are spawned with the pipe as their stdin.
-    if is_builtin(right_cmd) {
-        // The builtin doesn't consume the pipe; close it so a still-writing
-        // left command gets SIGPIPE rather than blocking forever.
-        run_builtin(right_cmd, &right_args[1..], &right_redir);
-        unsafe { libc::close(read_fd) };
-        if let Some(mut child) = left_child {
-            let _ = child.wait();
+    let mut children: Vec<std::process::Child> = Vec::new();
+
+    for i in 0..n {
+        let (cmd_args, redir) = &parsed[i];
+        let command = &cmd_args[0];
+        let rest = &cmd_args[1..];
+
+        // The pipe from the previous command (read end, i>0) and the pipe to
+        // the next command (write end, i<n-1). The first command inherits the
+        // terminal for stdin; the last inherits it for stdout.
+        let in_fd = if i > 0 { Some(pipes[i - 1].0) } else { None };
+        let out_fd = if i < n - 1 { Some(pipes[i].1) } else { None };
+
+        if is_builtin(command) {
+            // Builtins run in-process and never read stdin, so close the input
+            // pipe: a still-writing upstream command gets SIGPIPE instead of
+            // blocking forever waiting for a reader that never comes.
+            if let Some(fd) = in_fd {
+                unsafe { libc::close(fd) };
+            }
+            match out_fd {
+                Some(fd) if redir.stdout.is_none() => {
+                    // Point the builtin's output at the pipe, then run it.
+                    run_builtin_into_pipe(command, rest, redir, fd);
+                    unsafe { libc::close(fd) };
+                }
+                Some(fd) => {
+                    // A stdout redirect replaces the pipe: the builtin writes
+                    // to the file and the pipe carries nothing.
+                    run_builtin(command, rest, redir);
+                    unsafe { libc::close(fd) };
+                }
+                None => {
+                    // Last command: run as normal.
+                    run_builtin(command, rest, redir);
+                }
+            }
+            continue;
         }
-    } else {
-        let Some(right_program) = find_executable(right_cmd) else {
-            println!("{}: command not found", right_cmd);
-            unsafe { libc::close(read_fd) };
-            if let Some(mut child) = left_child {
+
+        let Some(program) = find_executable(command) else {
+            println!("{}: command not found", command);
+            for &(r, w) in &pipes {
+                unsafe {
+                    libc::close(r);
+                    libc::close(w);
+                }
+            }
+            for mut child in children {
                 let _ = child.wait();
             }
             return;
         };
-        let mut right = Command::new(&right_program);
-        right.arg0(right_cmd).args(&right_args[1..]);
-        right.stdin(Stdio::from(unsafe { std::fs::File::from_raw_fd(read_fd) }));
-        if let Some(path) = &right_redir.stdout {
-            if let Some(file) = open_redirect(path, right_redir.stdout_append) {
-                right.stdout(Stdio::from(file));
+        let mut child = Command::new(&program);
+        child.arg0(command).args(rest);
+        if let Some(fd) = in_fd {
+            child.stdin(Stdio::from(unsafe { std::fs::File::from_raw_fd(fd) }));
+        }
+        match out_fd {
+            Some(fd) if redir.stdout.is_none() => {
+                child.stdout(Stdio::from(unsafe { std::fs::File::from_raw_fd(fd) }));
+            }
+            Some(fd) => {
+                if let Some(file) = open_redirect(redir.stdout.as_deref().unwrap(), redir.stdout_append)
+                {
+                    child.stdout(Stdio::from(file));
+                }
+                unsafe { libc::close(fd) };
+            }
+            None => {
+                if let Some(path) = &redir.stdout {
+                    if let Some(file) = open_redirect(path, redir.stdout_append) {
+                        child.stdout(Stdio::from(file));
+                    }
+                }
             }
         }
-        if let Some(path) = &right_redir.stderr {
-            if let Some(file) = open_redirect(path, right_redir.stderr_append) {
-                right.stderr(Stdio::from(file));
+        if let Some(path) = &redir.stderr {
+            if let Some(file) = open_redirect(path, redir.stderr_append) {
+                child.stderr(Stdio::from(file));
             }
         }
-        let mut right_child = match right.spawn() {
-            Ok(child) => child,
+        match child.spawn() {
+            Ok(spawned) => {
+                children.push(spawned);
+                // Close the parent's copies of the pipe fds now that the child
+                // has its own, so a long-running upstream command still gets
+                // SIGPIPE when the downstream one exits.
+                drop(child);
+            }
             Err(_) => {
-                println!("{}: command not found", right_cmd);
-                unsafe { libc::close(read_fd) };
-                if let Some(mut child) = left_child {
-                    let _ = child.wait();
+                println!("{}: command not found", command);
+                for &(r, w) in &pipes {
+                    unsafe {
+                        libc::close(r);
+                        libc::close(w);
+                    }
+                }
+                for mut spawned in children {
+                    let _ = spawned.wait();
                 }
                 return;
             }
-        };
-        // Drop the parent's copy of the pipe read end now that the right
-        // command has its own. Otherwise, when the right command exits, the
-        // read end stays open here and a long-running left command (e.g.
-        // `tail -f`) never gets SIGPIPE, so the pipeline hangs.
-        drop(right);
-        // Wait for the right command first: e.g. `tail -f | head -n 5` lets
-        // head finish and the left command die of SIGPIPE on its next write.
-        let _ = right_child.wait();
-        if let Some(mut child) = left_child {
-            let _ = child.wait();
         }
+    }
+
+    // Wait right-to-left: e.g. `tail -f | head -n 5` lets head finish and the
+    // left command die of SIGPIPE on its next write.
+    for mut child in children.into_iter().rev() {
+        let _ = child.wait();
     }
 }
 
@@ -372,10 +390,20 @@ pub fn run_command(input: &str) {
         return;
     }
 
-    // A `|` token splits the line into a two-command pipeline. Split on the
-    // tokenized `|`, so a `|` inside quotes stays part of an argument.
-    if let Some(pipe) = args.iter().position(|t| t == "|") {
-        run_pipeline(&args[..pipe], &args[pipe + 1..]);
+    // A `|` token splits the line into a pipeline of two or more commands.
+    // Split on the tokenized `|`, so a `|` inside quotes stays part of an
+    // argument.
+    if args.contains(&"|".to_string()) {
+        let mut segments: Vec<&[String]> = Vec::new();
+        let mut start = 0;
+        for (i, token) in args.iter().enumerate() {
+            if token == "|" {
+                segments.push(&args[start..i]);
+                start = i + 1;
+            }
+        }
+        segments.push(&args[start..]);
+        run_pipeline(&segments);
         return;
     }
 
