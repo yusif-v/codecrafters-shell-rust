@@ -255,6 +255,7 @@ impl Completer for ShellHelper {
             if files.is_empty() {
                 // No matches: ring bell and leave unchanged.
                 let _ = std::io::stdout().write_all(b"\x07");
+                let _ = std::io::stdout().flush();
                 let display = &partial[replace_start..].to_string();
                 return Ok((word_start + replace_start, vec![Pair {
                     display: display.clone(),
@@ -280,6 +281,7 @@ impl Completer for ShellHelper {
                 // If there is more than one match, ring the bell to indicate ambiguity.
                 if files.len() > 1 {
                     let _ = std::io::stdout().write_all(b"\x07");
+                    let _ = std::io::stdout().flush();
                 }
                 return Ok((word_start + replace_start, candidates));
             }
