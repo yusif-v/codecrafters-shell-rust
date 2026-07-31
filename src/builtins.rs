@@ -42,6 +42,99 @@ fn print_job(job: &jobs::JobSnapshot, index: usize, len: usize) {
     println!("[{}]{}  {:<24}{}", job.id, job_marker(index, len), status, command);
 }
 
+/// Opens a redirect target file, honoring append mode. Returns None if the
+/// file can't be opened.
+fn open_redirect(path: &str, append: bool) -> Option<std::fs::File> {
+    let mut opt = OpenOptions::new();
+    if append {
+        opt.append(true).create(true);
+    } else {
+        opt.write(true).create(true).truncate(true);
+    }
+    opt.open(path).ok()
+}
+
+/// Runs a two-command pipeline `left | right`: the left command's stdout feeds
+/// the right command's stdin. Redirections are applied per side; a stdout
+/// redirect on the left replaces the pipe, otherwise stdout is piped.
+fn run_pipeline(left: &[String], right: &[String]) {
+    let (left_args, left_redir) = parse_redirections(left);
+    let (right_args, right_redir) = parse_redirections(right);
+    if left_args.is_empty() || right_args.is_empty() {
+        return;
+    }
+
+    // Left command: stdout goes to the pipe unless it redirects stdout.
+    let left_cmd = &left_args[0];
+    let Some(left_program) = find_executable(left_cmd) else {
+        println!("{}: command not found", left_cmd);
+        return;
+    };
+    let mut left = Command::new(&left_program);
+    left.arg0(left_cmd).args(&left_args[1..]);
+    if let Some(path) = &left_redir.stderr {
+        if let Some(file) = open_redirect(path, left_redir.stderr_append) {
+            left.stderr(Stdio::from(file));
+        }
+    }
+    if let Some(path) = &left_redir.stdout {
+        if let Some(file) = open_redirect(path, left_redir.stdout_append) {
+            left.stdout(Stdio::from(file));
+        }
+    } else {
+        left.stdout(Stdio::piped());
+    }
+    let mut left_child = match left.spawn() {
+        Ok(child) => child,
+        Err(_) => {
+            println!("{}: command not found", left_cmd);
+            return;
+        }
+    };
+
+    // Right command: stdin comes from the left command's pipe.
+    let right_cmd = &right_args[0];
+    let Some(right_program) = find_executable(right_cmd) else {
+        println!("{}: command not found", right_cmd);
+        // Drop the pipe reader so a writing left command doesn't block on it.
+        let _ = left_child.stdout.take();
+        let _ = left_child.wait();
+        return;
+    };
+    let mut right = Command::new(&right_program);
+    right.arg0(right_cmd).args(&right_args[1..]);
+    if let Some(pipe) = left_child.stdout.take() {
+        right.stdin(Stdio::from(pipe));
+    }
+    if let Some(path) = &right_redir.stdout {
+        if let Some(file) = open_redirect(path, right_redir.stdout_append) {
+            right.stdout(Stdio::from(file));
+        }
+    }
+    if let Some(path) = &right_redir.stderr {
+        if let Some(file) = open_redirect(path, right_redir.stderr_append) {
+            right.stderr(Stdio::from(file));
+        }
+    }
+    let mut right_child = match right.spawn() {
+        Ok(child) => child,
+        Err(_) => {
+            println!("{}: command not found", right_cmd);
+            let _ = left_child.wait();
+            return;
+        }
+    };
+    // Drop the parent's copy of the pipe read end now that the right command
+    // has its own. Otherwise, when the right command exits, the read end stays
+    // open here and a long-running left command (e.g. `tail -f`) never gets
+    // SIGPIPE, so the pipeline hangs.
+    drop(right);
+    // Wait for the right command first: e.g. `tail -f | head -n 5` lets head
+    // finish and the left command die of SIGPIPE on its next write.
+    let _ = right_child.wait();
+    let _ = left_child.wait();
+}
+
 /// Reaps finished background jobs, printing a Done line for each one that
 /// completed. Called before every prompt so completed jobs appear right after
 /// the previous command's output, without needing to run `jobs`.
@@ -63,6 +156,14 @@ pub fn run_command(input: &str) {
     if args.is_empty() {
         return;
     }
+
+    // A `|` token splits the line into a two-command pipeline. Split on the
+    // tokenized `|`, so a `|` inside quotes stays part of an argument.
+    if let Some(pipe) = args.iter().position(|t| t == "|") {
+        run_pipeline(&args[..pipe], &args[pipe + 1..]);
+        return;
+    }
+
     let (mut cmd_args, redirect) = parse_redirections(&args);
 
     // A trailing `&` (as the final token AND at the end of the raw line, so
