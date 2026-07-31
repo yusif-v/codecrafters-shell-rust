@@ -1,5 +1,4 @@
 use std::process::Child;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 /// Whether a tracked background job is still running or has exited.
@@ -24,21 +23,16 @@ struct Job {
     command: String,
 }
 
-/// Next job number to assign to a background job. Starts at 1 and increments
-/// with each background job started by the shell.
-static NEXT_JOB_ID: AtomicUsize = AtomicUsize::new(1);
-
 /// Background jobs known to the shell, in job-number order (the most recently
-/// added job is last).
+/// added job is last). Job numbers are recycled: when the table is empty the
+/// next job gets [1], otherwise one more than the highest number in the table.
 static JOBS: OnceLock<Mutex<Vec<Job>>> = OnceLock::new();
 
 /// Adds a background job to the shell's job table and returns its job number.
 pub fn add_job(child: Child, command: String) -> usize {
-    let id = NEXT_JOB_ID.fetch_add(1, Ordering::SeqCst);
-    JOBS.get_or_init(|| Mutex::new(Vec::new()))
-        .lock()
-        .unwrap()
-        .push(Job { id, child, command });
+    let mut list = JOBS.get_or_init(|| Mutex::new(Vec::new())).lock().unwrap();
+    let id = list.iter().map(|job| job.id).max().map_or(1, |max| max + 1);
+    list.push(Job { id, child, command });
     id
 }
 
