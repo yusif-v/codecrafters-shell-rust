@@ -284,6 +284,51 @@ impl Completer for ShellHelper {
         let partial = &before[word_start..];
 
         if word_start != 0 {
+            // Argument context. If a programmable completion is registered for
+            // the command, run its script and use the stdout lines as
+            // candidates (replacing the current word).
+            let command = before[..word_start].split_whitespace().next().unwrap_or("");
+            if let Some(script) = completions().lock().unwrap().get(command).cloned() {
+                let candidates: Vec<String> = match Command::new(&script).output() {
+                    Ok(output) => String::from_utf8_lossy(&output.stdout)
+                        .lines()
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect(),
+                    Err(_) => Vec::new(),
+                };
+                if candidates.len() == 1 {
+                    // Single candidate: complete to it with a trailing space.
+                    let candidate = candidates[0].clone();
+                    let replacement = format!("{} ", candidate);
+                    return Ok((word_start, vec![Pair {
+                        display: candidate,
+                        replacement,
+                    }]));
+                }
+                if !candidates.is_empty() {
+                    // Multiple candidates: hand them to rustyline (its List menu
+                    // picks among them on further TAB presses).
+                    let pairs: Vec<Pair> = candidates
+                        .into_iter()
+                        .map(|c| Pair {
+                            display: c.clone(),
+                            replacement: c,
+                        })
+                        .collect();
+                    return Ok((word_start, pairs));
+                }
+                // Script produced no candidates: ring the bell, leave input
+                // unchanged.
+                let _ = std::io::stdout().write_all(b"\x07");
+                let _ = std::io::stdout().flush();
+                let display = partial.to_string();
+                return Ok((word_start, vec![Pair {
+                    display: display.clone(),
+                    replacement: display.clone(),
+                }]));
+            }
+
             // Argument context: complete files relative to current directory.
             // Handles both simple names ("foo") and paths ("dir/sub/").
             let (replace_start, dir, filename_part, is_trailing_slash) = if partial.ends_with('/') {
