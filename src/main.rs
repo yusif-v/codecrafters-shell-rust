@@ -30,6 +30,26 @@ fn completions() -> &'static Mutex<HashMap<String, String>> {
     COMPLETIONS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// Longest common prefix of a set of candidate words.
+fn common_prefix(words: &[String]) -> String {
+    let Some(first) = words.first() else {
+        return String::new();
+    };
+    let mut end = first.len();
+    for w in &words[1..] {
+        let max = end.min(w.len());
+        let mut i = 0;
+        while i < max && first.as_bytes()[i] == w.as_bytes()[i] {
+            i += 1;
+        }
+        end = i;
+        if end == 0 {
+            break;
+        }
+    }
+    first[..end].to_string()
+}
+
 fn main() -> Result<(), ReadlineError> {
     // "List" completion re-invokes our Completer on each TAB press (so a
     // second TAB completes the next path segment). "Circular" (the default)
@@ -325,10 +345,20 @@ impl Completer for ShellHelper {
                     }]));
                 }
                 if !candidates.is_empty() {
-                    // Multiple candidates: the first TAB rings the bell (no
-                    // unique match); a subsequent TAB on the same unchanged
-                    // line prints them sorted (two-space separated) and
-                    // reprints the prompt with the original input.
+                    // Longest common prefix: if the candidates share a prefix
+                    // longer than what the user typed, complete to it (no
+                    // bell, no trailing space).
+                    let lcp = common_prefix(&candidates);
+                    if lcp.len() > partial.len() {
+                        return Ok((word_start, vec![Pair {
+                            display: lcp.clone(),
+                            replacement: lcp,
+                        }]));
+                    }
+                    // No extension of the current input: the first TAB rings
+                    // the bell (no unique match); a subsequent TAB on the same
+                    // unchanged line prints them sorted (two-space separated)
+                    // and reprints the prompt with the original input.
                     let mut sorted = candidates;
                     sorted.sort();
                     let key = (pos, line.to_string());
