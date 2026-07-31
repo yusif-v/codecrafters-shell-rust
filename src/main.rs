@@ -26,6 +26,10 @@ fn main() -> Result<(), ReadlineError> {
     rl.set_helper(Some(helper));
 
     loop {
+        // Reap finished background jobs and print their Done lines before
+        // drawing the next prompt, so completed jobs appear automatically.
+        builtins::reap_background_jobs();
+
         // The prompt is drawn by rustyline itself. TAB triggers our Completer.
         match rl.readline("$ ") {
             Ok(line) => {

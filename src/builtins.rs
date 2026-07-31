@@ -15,6 +15,46 @@ pub fn is_builtin(command: &str) -> bool {
     BUILTINS.contains(&command)
 }
 
+/// The marker for the job at `index` in a list of `len` jobs: the most
+/// recently started job gets `+`, the second most recent gets `-`, and every
+/// other job a blank marker.
+fn job_marker(index: usize, len: usize) -> &'static str {
+    if index + 1 == len {
+        "+"
+    } else if index + 2 == len {
+        "-"
+    } else {
+        " "
+    }
+}
+
+/// Prints one job line. Status is a fixed-width 24-char field; the command
+/// follows it directly (e.g. "Running" + 17 trailing spaces). Done entries
+/// omit the trailing `&` recorded at launch.
+fn print_job(job: &jobs::JobSnapshot, index: usize, len: usize) {
+    let (status, command) = match job.status {
+        jobs::JobStatus::Running => ("Running", job.command.as_str()),
+        jobs::JobStatus::Done => {
+            let stripped = job.command.trim_end().trim_end_matches('&');
+            ("Done", stripped.trim_end())
+        }
+    };
+    println!("[{}]{}  {:<24}{}", job.id, job_marker(index, len), status, command);
+}
+
+/// Reaps finished background jobs, printing a Done line for each one that
+/// completed. Called before every prompt so completed jobs appear right after
+/// the previous command's output, without needing to run `jobs`.
+pub fn reap_background_jobs() {
+    let list = jobs::reap();
+    let len = list.len();
+    for (index, job) in list.iter().enumerate() {
+        if job.status == jobs::JobStatus::Done {
+            print_job(job, index, len);
+        }
+    }
+}
+
 /// Executes one already-trimmed command line: tokenize, strip redirections,
 /// dispatch builtins or spawn an external program. A trailing `&` token runs
 /// the command in the background (the shell doesn't wait for it to finish).
@@ -180,29 +220,11 @@ pub fn run_command(input: &str) {
         }
         // List every background job the shell is tracking. Finished jobs are
         // shown with status Done (and no trailing `&`), then dropped from the
-        // table so they don't appear in later calls. The most recently started
-        // job gets the `+` marker, the second most recent `-`, others a blank.
+        // table so they don't appear in later calls.
         "jobs" => {
-            let list = jobs::check_jobs();
+            let list = jobs::reap();
             for (index, job) in list.iter().enumerate() {
-                let marker = if index + 1 == list.len() {
-                    "+"
-                } else if index + 2 == list.len() {
-                    "-"
-                } else {
-                    " "
-                };
-                // Status is a fixed-width 24-char field; the command follows
-                // it directly (e.g. "Running" + 17 trailing spaces).
-                let (status, command) = match job.status {
-                    jobs::JobStatus::Running => ("Running", job.command.as_str()),
-                    // Done entries omit the trailing `&` recorded at launch.
-                    jobs::JobStatus::Done => {
-                        let stripped = job.command.trim_end().trim_end_matches('&');
-                        ("Done", stripped.trim_end())
-                    }
-                };
-                println!("[{}]{}  {:<24}{}", job.id, marker, status, command);
+                print_job(job, index, list.len());
             }
         }
         // Non-builtin commands: try to run an external program.

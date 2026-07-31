@@ -44,8 +44,8 @@ pub fn add_job(child: Child, command: String) -> usize {
 
 /// Checks every tracked job for completion and returns snapshots of all of
 /// them. Jobs that have exited are reported with status `Done` and removed
-/// from the table, so a later `jobs` call won't list them again.
-pub fn check_jobs() -> Vec<JobSnapshot> {
+/// from the table, so a later reap won't report them again.
+pub fn reap() -> Vec<JobSnapshot> {
     let mut list = JOBS.get_or_init(|| Mutex::new(Vec::new())).lock().unwrap();
     let mut snapshots = Vec::with_capacity(list.len());
     let mut done_indexes = Vec::new();
