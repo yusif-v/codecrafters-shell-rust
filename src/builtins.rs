@@ -1,6 +1,7 @@
 use std::fs::OpenOptions;
 use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::completions::completions as completion_registry;
 use crate::path::{find_executable, home_dir};
@@ -14,14 +15,33 @@ pub fn is_builtin(command: &str) -> bool {
     BUILTINS.contains(&command)
 }
 
+/// Next job number to assign to a background job. Starts at 1 and increments
+/// with each background job started by the shell.
+static NEXT_JOB_ID: AtomicUsize = AtomicUsize::new(1);
+
+fn next_job_id() -> usize {
+    NEXT_JOB_ID.fetch_add(1, Ordering::SeqCst)
+}
+
 /// Executes one already-trimmed command line: tokenize, strip redirections,
-/// dispatch builtins or spawn an external program.
+/// dispatch builtins or spawn an external program. A trailing `&` token runs
+/// the command in the background (the shell doesn't wait for it to finish).
 pub fn run_command(input: &str) {
     let args = tokenize(input);
     if args.is_empty() {
         return;
     }
-    let (cmd_args, redirect) = parse_redirections(&args);
+    let (mut cmd_args, redirect) = parse_redirections(&args);
+
+    // A trailing `&` (as the final token AND at the end of the raw line, so
+    // that `echo "&"` isn't mistaken for a background request) runs the
+    // remaining command in the background.
+    let background = cmd_args.last().map(|s| s.as_str()) == Some("&")
+        && input.trim_end().ends_with('&');
+    if background {
+        cmd_args.pop();
+    }
+
     if cmd_args.is_empty() {
         return;
     }
@@ -198,9 +218,19 @@ pub fn run_command(input: &str) {
                         cmd.stderr(Stdio::from(file));
                     }
                 }
-                let status = cmd.status();
-                if status.is_err() {
-                    println!("{}: command not found", command);
+                if background {
+                    // Run without waiting: spawn the child and report its job
+                    // number and PID, then let the shell return to the prompt
+                    // immediately.
+                    match cmd.spawn() {
+                        Ok(child) => println!("[{}] {}", next_job_id(), child.id()),
+                        Err(_) => println!("{}: command not found", command),
+                    }
+                } else {
+                    let status = cmd.status();
+                    if status.is_err() {
+                        println!("{}: command not found", command);
+                    }
                 }
             } else {
                 println!("{}: command not found", command);
