@@ -200,8 +200,7 @@ impl Completer for ShellHelper {
         // Where are we completing? If the cursor is past a space we're
         // typing an argument -> complete filenames in the current directory.
         // Otherwise we're typing the command name -> builtins + PATH.
-        let line_trimmed = line.trim_end();
-        let before = &line_trimmed[..pos.min(line_trimmed.len())];
+        let before = &line[..pos.min(line.len())];
         let word_start = before
             .rfind(char::is_whitespace)
             .map(|i| i + 1)
@@ -211,109 +210,137 @@ impl Completer for ShellHelper {
         if word_start != 0 {
             // Argument context: complete files relative to current directory.
             // Handles both simple names ("foo") and paths ("dir/sub/").
-            let (replace_start, dir, filename_part) = if partial.ends_with('/') {
+            let (replace_start, dir, filename_part, is_trailing_slash) = if partial.ends_with('/') {
                 // Trailing slash: complete directory contents
-                // replace_start = position after the slash (where filename goes)
-                // dir = the directory path, the part to preserve in output
-                (partial.len(), partial.to_string(), String::new())
+                // replace_start = 0 (we'll replace the entire partial)
+                // dir = directory name WITHOUT trailing slash (for reading)
+                // filename_part = "" (match all files in directory)
+                // is_trailing_slash = true (we need to include dir in replacement)
+                (0, partial[..partial.len()-1].to_string(), String::new(), true)
             } else if let Some(last_slash) = partial.rfind('/') {
                 // Path with prefix: split directory and filename prefix
                 // replace_start = position in line where filename starts (after last /)
                 // dir = the directory path to read
-                (last_slash + 1, partial[..last_slash + 1].to_string(), partial[last_slash + 1..].to_string())
+                // filename_part = the filename prefix we're completing
+                // is_trailing_slash = false (normal path completion)
+                (last_slash + 1, partial[..last_slash + 1].to_string(), partial[last_slash + 1..].to_string(), false)
             } else {
                 // Simple filename in CWD
-                (0, ".".to_string(), partial.to_string())
+                (0, ".".to_string(), partial.to_string(), false)
             };
 
-            let mut files: Vec<String> = Vec::new();
+            let mut files: Vec<(String, bool)> = Vec::new();
             if let Ok(entries) = std::fs::read_dir(&dir) {
                 for entry in entries.flatten() {
                     if let Some(name) = entry.file_name().to_str() {
+                        // Skip "." and ".." entries
+                        if name == "." || name == ".." {
+                            continue;
+                        }
                         if name.starts_with(&filename_part) {
-                            // Return the filename to insert after the directory prefix
-                            files.push(name.to_string());
+                            files.push((name.to_string(), entry.path().is_dir()));
                         }
                     }
                 }
             }
-            if files.len() == 1 {
-                // Calculate the actual replacement position in the line
-                let actual_start = word_start + replace_start;
+
+            if files.is_empty() {
+                // No matches: ring bell and leave unchanged.
+                let _ = std::io::stdout().write_all(b"\x07");
+                let display = &partial[replace_start..].to_string();
+                return Ok((word_start + replace_start, vec![Pair {
+                    display: display.clone(),
+                    replacement: display.clone(),
+                }]));
+            } else {
+                // We have at least one match. Sort by filename.
+                let mut sorted_files = files.clone();
+                sorted_files.sort_by(|a, b| a.0.cmp(&b.0));
+                let (name, is_dir) = &sorted_files[0];
+                let suffix = if *is_dir { "/" } else { " " };
+                let replacement = if is_trailing_slash {
+                    // For trailing slash case, we need to include the directory in replacement
+                    format!("{}/{}{}", dir, name, suffix)
+                } else {
+                    // For normal path completion, we only replace the filename part
+                    format!("{}{}", name, suffix)
+                };
                 let candidates = vec![Pair {
-                    display: files[0].clone(),
-                    replacement: format!("{} ", files[0]),
+                    display: name.clone(),
+                    replacement,
                 }];
-                return Ok((actual_start, candidates));
+                // If there is more than one match, ring the bell to indicate ambiguity.
+                if files.len() > 1 {
+                    let _ = std::io::stdout().write_all(b"\x07");
+                }
+                return Ok((word_start + replace_start, candidates));
             }
-            // No single file match: leave the line unchanged.
-            return Ok((word_start, vec![]));
-        }
+        } else {
+            // Command-name context: collect all matching builtins + PATH executables.
+            let mut names: Vec<String> = self
+                .builtins
+                .iter()
+                .filter(|b| b.starts_with(partial))
+                .map(|b| (*b).to_string())
+                .collect();
+            for exe in executables_starting_with(partial) {
+                names.push(exe);
+            }
+            names.sort();
+            names.dedup();
 
-        // Command-name context: collect all matching builtins + PATH executables.
-        let mut names: Vec<String> = self
-            .builtins
-            .iter()
-            .filter(|b| b.starts_with(partial))
-            .map(|b| (*b).to_string())
-            .collect();
-        for exe in executables_starting_with(partial) {
-            names.push(exe);
-        }
-        names.sort();
-        names.dedup();
+            // No matches (invalid command): ring the bell and leave the line
+            // unchanged.
+            if names.is_empty() {
+                let _ = std::io::stdout().write_all(b"\x07");
+                let _ = std::io::stdout().flush();
+                let candidates = vec![Pair {
+                    display: partial.to_string(),
+                    replacement: partial.to_string(),
+                }];
+                return Ok((word_start, candidates));
+            }
 
-        // No matches (invalid command): ring the bell and leave the line
-        // unchanged.
-        if names.is_empty() {
+            let single = names.len() == 1;
+
+            if single {
+                // One match: complete to the full name with a trailing space.
+                let candidates = vec![Pair {
+                    display: names[0].clone(),
+                    replacement: format!("{} ", names[0]),
+                }];
+                return Ok((word_start, candidates));
+            }
+
+            // Multiple matches: compute the longest common prefix ourselves.
+            let lcp = longest_common_prefix(&names);
+            if lcp != partial {
+                // Strict common prefix (e.g. `xyz_` -> `xyz_foo/...`): insert
+                // it in-place. rustyline then re-invokes on the next TAB.
+                let candidates = vec![Pair {
+                    display: lcp.clone(),
+                    replacement: lcp,
+                }];
+                return Ok((word_start, candidates));
+            }
+
+            // No extra prefix (LCP == typed text): ring the bell, print the
+            // candidate list on its own line (rustyline's own menu is not
+            // captured by the tester, and it does not re-invoke `complete`
+            // on a no-op). Return a no-op candidate so the prompt
+            // `$ xyz_` stays unchanged.
             let _ = std::io::stdout().write_all(b"\x07");
             let _ = std::io::stdout().flush();
+            if !names.is_empty() {
+                print!("\r\n{}\r\n", names.join("  "));
+                let _ = std::io::stdout().flush();
+            }
             let candidates = vec![Pair {
                 display: partial.to_string(),
                 replacement: partial.to_string(),
             }];
-            return Ok((word_start, candidates));
+            Ok((word_start, candidates))
         }
-
-        let single = names.len() == 1;
-
-        if single {
-            // One match: complete to the full name with a trailing space.
-            let candidates = vec![Pair {
-                display: names[0].clone(),
-                replacement: format!("{} ", names[0]),
-            }];
-            return Ok((word_start, candidates));
-        }
-
-        // Multiple matches: compute the longest common prefix ourselves.
-        let lcp = longest_common_prefix(&names);
-        if lcp != partial {
-            // Strict common prefix (e.g. `xyz_` -> `xyz_foo/...`): insert
-            // it in-place. rustyline then re-invokes on the next TAB.
-            let candidates = vec![Pair {
-                display: lcp.clone(),
-                replacement: lcp,
-            }];
-            return Ok((word_start, candidates));
-        }
-
-        // No extra prefix (LCP == typed text): ring the bell, print the
-        // candidate list on its own line (rustyline's own menu is not
-        // captured by the tester, and it does not re-invoke `complete`
-        // on a no-op). Return a no-op candidate so the prompt
-        // `$ xyz_` stays unchanged.
-        let _ = std::io::stdout().write_all(b"\x07");
-        let _ = std::io::stdout().flush();
-        if !names.is_empty() {
-            print!("\r\n{}\r\n", names.join("  "));
-            let _ = std::io::stdout().flush();
-        }
-        let candidates = vec![Pair {
-            display: partial.to_string(),
-            replacement: partial.to_string(),
-        }];
-        Ok((word_start, candidates))
     }
 }
 
@@ -501,14 +528,10 @@ fn home_dir() -> Option<String> {
         .filter(|p| Path::new(p).is_dir())
 }
 
-/// Returns true if the given command name is a shell builtin.
 fn is_builtin(command: &str) -> bool {
     BUILTINS.contains(&command)
 }
 
-/// Lists executable file names in PATH whose names start with `partial`.
-/// Used for TAB completion of external commands. Non-existent directories are
-/// skipped gracefully. Results are de-duplicated.
 fn executables_starting_with(partial: &str) -> Vec<String> {
     let mut found: Vec<String> = Vec::new();
     let path_var = std::env::var("PATH").unwrap_or_default();
@@ -516,17 +539,16 @@ fn executables_starting_with(partial: &str) -> Vec<String> {
         if dir.is_empty() {
             continue;
         }
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            continue; // directory may not exist; skip
-        };
-        for entry in entries.flatten() {
-            let name = entry.file_name();
-            let name = name.to_string_lossy();
-            if !name.starts_with(partial) {
-                continue;
-            }
-            if is_executable(&entry.path()) && !found.iter().any(|f| f == name.as_ref()) {
-                found.push(name.to_string());
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                if !name.starts_with(partial) {
+                    continue;
+                }
+                if is_executable(&entry.path()) && !found.iter().any(|f| f == name.as_ref()) {
+                    found.push(name.to_string());
+                }
             }
         }
     }
@@ -551,7 +573,6 @@ fn find_executable(command: &str) -> Option<String> {
     None
 }
 
-/// True if the path exists and has at least one execute permission bit set.
 fn is_executable(path: &Path) -> bool {
     std::fs::metadata(path)
         .map(|m| m.permissions().mode() & 0o111 != 0)
