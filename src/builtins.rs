@@ -8,7 +8,7 @@ use crate::redirection::{emit, parse_redirections};
 use crate::tokenize::tokenize;
 
 /// All builtin command names. Used by `type`, the dispatcher, and completion.
-pub const BUILTINS: &[&str] = &["echo", "exit", "type", "pwd", "cd", "complete"];
+pub const BUILTINS: &[&str] = &["echo", "exit", "type", "pwd", "cd", "complete", "jobs"];
 
 pub fn is_builtin(command: &str) -> bool {
     BUILTINS.contains(&command)
@@ -166,6 +166,10 @@ pub fn run_command(input: &str) {
                 }
             }
         }
+        // The jobs builtin is registered but empty for now. The actual
+        // implementation (listing running background jobs) is covered in a
+        // later stage.
+        "jobs" => {}
         // Non-builtin commands: try to run an external program.
         _ => {
             if let Some(program) = find_executable(command) {
