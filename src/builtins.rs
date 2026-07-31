@@ -184,7 +184,15 @@ pub fn run_command(input: &str) {
         "jobs" => {
             let list = jobs::list_jobs();
             for (index, job) in list.iter().enumerate() {
-                let marker = if index + 1 == list.len() { "+" } else { "-" };
+                // The most recently started job gets `+`, the second most
+                // recent gets `-`, and every other job a blank marker.
+                let marker = if index + 1 == list.len() {
+                    "+"
+                } else if index + 2 == list.len() {
+                    "-"
+                } else {
+                    " "
+                };
                 // Status is a fixed-width 24-char field; the command follows
                 // it directly ("Running" + 17 trailing spaces).
                 println!("[{}]{}  {:<24}{}", job.id, marker, "Running", job.command);
