@@ -5,13 +5,16 @@ use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
 
 use crate::completions::completions as completion_registry;
+use crate::history;
 use crate::jobs;
 use crate::path::{find_executable, home_dir};
 use crate::redirection::{emit, parse_redirections, Redirection};
 use crate::tokenize::tokenize;
 
 /// All builtin command names. Used by `type`, the dispatcher, and completion.
-pub const BUILTINS: &[&str] = &["echo", "exit", "type", "pwd", "cd", "complete", "jobs"];
+pub const BUILTINS: &[&str] = &[
+    "echo", "exit", "type", "pwd", "cd", "complete", "jobs", "history",
+];
 
 pub fn is_builtin(command: &str) -> bool {
     BUILTINS.contains(&command)
@@ -219,6 +222,15 @@ fn run_builtin(command: &str, rest: &[String], redirect: &Redirection) {
             let list = jobs::reap();
             for (index, job) in list.iter().enumerate() {
                 print_job(job, index, list.len());
+            }
+        }
+        // List previously executed commands with their line numbers, matching
+        // bash's format: the number is right-aligned in a 5-wide field,
+        // followed by two spaces and the command.
+        "history" => {
+            let list = history::list();
+            for (index, cmd) in list.iter().enumerate() {
+                emit(&format!("{:>5}  {}", index + 1, cmd), redirect);
             }
         }
         // Builtins are the only commands dispatched here.

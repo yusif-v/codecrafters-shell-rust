@@ -1,7 +1,7 @@
 # Graph Report - shell-rust  (2026-07-31)
 
 ## Corpus Check
-- 7 files · ~4,705 words
+- 7 files · ~4,804 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
@@ -80,11 +80,11 @@ _Questions this graph is uniquely positioned to answer:_
   _High betweenness centrality (0.140) - this node is a cross-community bridge._
 - **Why does `run_builtin()` connect `Community 0` to `Community 1`, `Community 2`, `Community 3`, `Community 5`?**
   _High betweenness centrality (0.122) - this node is a cross-community bridge._
-- **Are the 8 inferred relationships involving `run_command()` (e.g. with `parse_redirections()` and `find_executable()`) actually correct?**
+- **Are the 8 inferred relationships involving `run_command()` (e.g. with `.new()` and `parse_redirections()`) actually correct?**
   _`run_command()` has 8 INFERRED edges - model-reasoned connections that need verification._
 - **Are the 5 inferred relationships involving `run_builtin()` (e.g. with `.new()` and `emit()`) actually correct?**
   _`run_builtin()` has 5 INFERRED edges - model-reasoned connections that need verification._
-- **Are the 3 inferred relationships involving `run_pipeline()` (e.g. with `parse_redirections()` and `find_executable()`) actually correct?**
+- **Are the 3 inferred relationships involving `run_pipeline()` (e.g. with `parse_redirections()` and `.new()`) actually correct?**
   _`run_pipeline()` has 3 INFERRED edges - model-reasoned connections that need verification._
 - **Are the 4 inferred relationships involving `find_executable()` (e.g. with `run_builtin()` and `run_pipeline()`) actually correct?**
   _`find_executable()` has 4 INFERRED edges - model-reasoned connections that need verification._

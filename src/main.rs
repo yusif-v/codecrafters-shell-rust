@@ -1,6 +1,7 @@
 mod builtins;
 mod completion;
 mod completions;
+mod history;
 mod jobs;
 mod path;
 mod redirection;
@@ -37,6 +38,9 @@ fn main() -> Result<(), ReadlineError> {
                 if line.is_empty() {
                     continue;
                 }
+                // Record the line before executing so the `history` builtin
+                // (and `exit`) appear in the listing themselves.
+                history::record(line);
                 builtins::run_command(line);
             }
             Err(ReadlineError::Interrupted) | Err(ReadlineError::Eof) => break,
