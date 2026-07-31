@@ -261,30 +261,73 @@ impl Completer for ShellHelper {
                     display: display.clone(),
                     replacement: display.clone(),
                 }]));
-            } else {
-                // We have at least one match. Sort by filename.
-                let mut sorted_files = files.clone();
-                sorted_files.sort_by(|a, b| a.0.cmp(&b.0));
-                let (name, is_dir) = &sorted_files[0];
-                let suffix = if *is_dir { "/" } else { " " };
-                let replacement = if is_trailing_slash {
-                    // For trailing slash case, we need to include the directory in replacement
-                    format!("{}/{}{}", dir, name, suffix)
-                } else {
-                    // For normal path completion, we only replace the filename part
-                    format!("{}{}", name, suffix)
-                };
-                let candidates = vec![Pair {
-                    display: name.clone(),
-                    replacement,
-                }];
-                // If there is more than one match, ring the bell to indicate ambiguity.
-                if files.len() > 1 {
-                    let _ = std::io::stdout().write_all(b"\x07");
-                    let _ = std::io::stdout().flush();
-                }
-                return Ok((word_start + replace_start, candidates));
             }
+
+            // Sort matches so both single-match completion and the multi-match
+            // listing are in alphabetical order.
+            let mut sorted_files = files.clone();
+            sorted_files.sort_by(|a, b| a.0.cmp(&b.0));
+
+            if sorted_files.len() > 1 {
+                // Multiple matches.
+                // First: if the matches share a strict common prefix, extend
+                // the input to that prefix (the next TAB will disambiguate).
+                let names: Vec<String> =
+                    sorted_files.iter().map(|(n, _)| n.clone()).collect();
+                let lcp = longest_common_prefix(&names);
+                if lcp != filename_part {
+                    let replacement = if is_trailing_slash {
+                        // Include the already-typed directory in the replacement.
+                        format!("{}/{}", dir, lcp)
+                    } else {
+                        lcp.clone()
+                    };
+                    let candidates = vec![Pair {
+                        display: lcp.clone(),
+                        replacement,
+                    }];
+                    return Ok((word_start + replace_start, candidates));
+                }
+                // Otherwise ring the bell and list every match on its own line,
+                // leaving the input unchanged.
+                let _ = std::io::stdout().write_all(b"\x07");
+                let _ = std::io::stdout().flush();
+                let listing: Vec<String> = sorted_files
+                    .iter()
+                    .map(|(n, is_dir)| {
+                        if *is_dir {
+                            format!("{}/", n)
+                        } else {
+                            n.clone()
+                        }
+                    })
+                    .collect();
+                print!("\r\n{}\r\n", listing.join("  "));
+                let _ = std::io::stdout().flush();
+                let display = &partial[replace_start..].to_string();
+                return Ok((word_start + replace_start, vec![Pair {
+                    display: display.clone(),
+                    replacement: display.clone(),
+                }]));
+            }
+
+            // Single match: complete to the full name. Directories get a
+            // trailing slash (no space) so TAB can keep descending; files get
+            // a trailing space.
+            let (name, is_dir) = &sorted_files[0];
+            let suffix = if *is_dir { "/" } else { " " };
+            let replacement = if is_trailing_slash {
+                // For trailing slash case, we need to include the directory in replacement
+                format!("{}/{}{}", dir, name, suffix)
+            } else {
+                // For normal path completion, we only replace the filename part
+                format!("{}{}", name, suffix)
+            };
+            let candidates = vec![Pair {
+                display: name.clone(),
+                replacement,
+            }];
+            return Ok((word_start + replace_start, candidates));
         } else {
             // Command-name context: collect all matching builtins + PATH executables.
             let mut names: Vec<String> = self
