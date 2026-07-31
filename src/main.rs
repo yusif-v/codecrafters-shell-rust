@@ -1,10 +1,12 @@
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::sync::{Mutex, OnceLock};
 
 use rustyline::completion::{Completer, Pair};
 use rustyline::config::CompletionType;
@@ -18,6 +20,15 @@ use rustyline::{Context, Editor, Helper};
 /// All builtin command names. Used by `type`, the dispatcher, and (later)
 /// completion.
 const BUILTINS: &[&str] = &["echo", "exit", "type", "pwd", "cd", "complete"];
+
+/// Programmable completions registered via `complete`. Maps a command name to
+/// the registered specification (its printable `complete` args). The shell is
+/// single-threaded; the lock is only for safe shared access.
+static COMPLETIONS: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+
+fn completions() -> &'static Mutex<HashMap<String, String>> {
+    COMPLETIONS.get_or_init(|| Mutex::new(HashMap::new()))
+}
 
 fn main() -> Result<(), ReadlineError> {
     // "List" completion re-invokes our Completer on each TAB press (so a
@@ -144,9 +155,35 @@ fn run_command(input: &str) {
             };
             emit(&out, &redirect);
         }
-        // Programmable completion builtin. Registered so it is recognized by
-        // `type`; behavior is implemented in later stages.
-        "complete" => {}
+        // Programmable completion builtin. `complete -p <name>` prints the
+        // registered specification for <name>, or an error if none exists.
+        "complete" => {
+            let mut args = rest.iter();
+            while let Some(arg) = args.next() {
+                match arg.as_str() {
+                    // Print specifications for every following command name.
+                    "-p" => {
+                        let specs = completions().lock().unwrap();
+                        for name in args.by_ref() {
+                            if name.starts_with('-') {
+                                break;
+                            }
+                            match specs.get(name) {
+                                Some(spec) => emit(spec, &redirect),
+                                None => emit(
+                                    &format!(
+                                        "complete: {}: no completion specification",
+                                        name
+                                    ),
+                                    &redirect,
+                                ),
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
         // Non-builtin commands: try to run an external program.
         _ => {
             if let Some(program) = find_executable(command) {
