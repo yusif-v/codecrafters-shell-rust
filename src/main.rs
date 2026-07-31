@@ -1,6 +1,7 @@
 mod builtins;
 mod completion;
 mod completions;
+mod jobs;
 mod path;
 mod redirection;
 mod tokenize;

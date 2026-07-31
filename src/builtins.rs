@@ -1,9 +1,9 @@
 use std::fs::OpenOptions;
 use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::completions::completions as completion_registry;
+use crate::jobs;
 use crate::path::{find_executable, home_dir};
 use crate::redirection::{emit, parse_redirections};
 use crate::tokenize::tokenize;
@@ -13,14 +13,6 @@ pub const BUILTINS: &[&str] = &["echo", "exit", "type", "pwd", "cd", "complete",
 
 pub fn is_builtin(command: &str) -> bool {
     BUILTINS.contains(&command)
-}
-
-/// Next job number to assign to a background job. Starts at 1 and increments
-/// with each background job started by the shell.
-static NEXT_JOB_ID: AtomicUsize = AtomicUsize::new(1);
-
-fn next_job_id() -> usize {
-    NEXT_JOB_ID.fetch_add(1, Ordering::SeqCst)
 }
 
 /// Executes one already-trimmed command line: tokenize, strip redirections,
@@ -186,10 +178,18 @@ pub fn run_command(input: &str) {
                 }
             }
         }
-        // The jobs builtin is registered but empty for now. The actual
-        // implementation (listing running background jobs) is covered in a
-        // later stage.
-        "jobs" => {}
+        // List every background job the shell has started. Jobs that are no
+        // longer known (e.g. done and reaped) simply don't appear. The most
+        // recently started job gets the `+` marker; others get `-`.
+        "jobs" => {
+            let list = jobs::list_jobs();
+            for (index, job) in list.iter().enumerate() {
+                let marker = if index + 1 == list.len() { "+" } else { "-" };
+                // Status is a fixed-width 24-char field; the command follows
+                // it directly ("Running" + 17 trailing spaces).
+                println!("[{}]{}  {:<24}{}", job.id, marker, "Running", job.command);
+            }
+        }
         // Non-builtin commands: try to run an external program.
         _ => {
             if let Some(program) = find_executable(command) {
@@ -223,7 +223,10 @@ pub fn run_command(input: &str) {
                     // number and PID, then let the shell return to the prompt
                     // immediately.
                     match cmd.spawn() {
-                        Ok(child) => println!("[{}] {}", next_job_id(), child.id()),
+                        Ok(child) => {
+                            let id = jobs::add_job(child.id(), input.to_string());
+                            println!("[{}] {}", id, child.id());
+                        }
                         Err(_) => println!("{}: command not found", command),
                     }
                 } else {
