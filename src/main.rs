@@ -329,16 +329,27 @@ impl Completer for ShellHelper {
                     }]));
                 }
                 if !candidates.is_empty() {
-                    // Multiple candidates: hand them to rustyline (its List menu
-                    // picks among them on further TAB presses).
-                    let pairs: Vec<Pair> = candidates
-                        .into_iter()
-                        .map(|c| Pair {
-                            display: c.clone(),
-                            replacement: c,
-                        })
-                        .collect();
-                    return Ok((word_start, pairs));
+                    // Multiple candidates: the first TAB rings the bell (no
+                    // unique match); a subsequent TAB on the same unchanged
+                    // line prints them sorted (two-space separated) and
+                    // reprints the prompt with the original input.
+                    let mut sorted = candidates;
+                    sorted.sort();
+                    let key = (pos, line.to_string());
+                    let listed =
+                        self.last_arg_complete.borrow().as_ref() == Some(&key);
+                    *self.last_arg_complete.borrow_mut() = Some(key);
+                    let _ = std::io::stdout().write_all(b"\x07");
+                    let _ = std::io::stdout().flush();
+                    if listed {
+                        print!("\r\n{}\r\n", sorted.join("  "));
+                        let _ = std::io::stdout().flush();
+                    }
+                    let display = partial.to_string();
+                    return Ok((word_start, vec![Pair {
+                        display: display.clone(),
+                        replacement: display.clone(),
+                    }]));
                 }
                 // Script produced no candidates: ring the bell, leave input
                 // unchanged.
