@@ -17,7 +17,7 @@ use rustyline::{Context, Editor, Helper};
 
 /// All builtin command names. Used by `type`, the dispatcher, and (later)
 /// completion.
-const BUILTINS: &[&str] = &["echo", "exit", "type", "pwd", "cd"];
+const BUILTINS: &[&str] = &["echo", "exit", "type", "pwd", "cd", "complete"];
 
 fn main() -> Result<(), ReadlineError> {
     // "List" completion re-invokes our Completer on each TAB press (so a
@@ -144,6 +144,9 @@ fn run_command(input: &str) {
             };
             emit(&out, &redirect);
         }
+        // Programmable completion builtin. Registered so it is recognized by
+        // `type`; behavior is implemented in later stages.
+        "complete" => {}
         // Non-builtin commands: try to run an external program.
         _ => {
             if let Some(program) = find_executable(command) {
