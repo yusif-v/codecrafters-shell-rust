@@ -26,6 +26,14 @@ fn main() -> Result<(), ReadlineError> {
     let helper = ShellHelper::new();
     rl.set_helper(Some(helper));
 
+    // Load the history file named by $HISTFILE into memory at startup: into
+    // our own store (which backs the `history` builtin) and rustyline's
+    // (which backs up-arrow recall).
+    if let Ok(histfile) = std::env::var("HISTFILE") {
+        let _ = history::load_file(&histfile);
+        let _ = rl.load_history(&histfile);
+    }
+
     loop {
         // Reap finished background jobs and print their Done lines before
         // drawing the next prompt, so completed jobs appear automatically.
