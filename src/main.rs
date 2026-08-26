@@ -38,9 +38,8 @@ fn main() -> Result<(), ReadlineError> {
                 if line.is_empty() {
                     continue;
                 }
-                // Record the line before executing so the `history` builtin
-                // (and `exit`) appear in the listing themselves.
                 history::record(line);
+                let _ = rl.add_history_entry(line);
                 builtins::run_command(line);
             }
             Err(ReadlineError::Interrupted) | Err(ReadlineError::Eof) => break,

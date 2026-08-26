@@ -229,7 +229,14 @@ fn run_builtin(command: &str, rest: &[String], redirect: &Redirection) {
         // followed by two spaces and the command.
         "history" => {
             let list = history::list();
-            for (index, cmd) in list.iter().enumerate() {
+            // An optional numeric argument limits the listing to the most
+            // recent `n` entries, keeping their original line numbers.
+            let limit = rest
+                .first()
+                .and_then(|arg| arg.parse::<usize>().ok())
+                .unwrap_or(list.len());
+            let start = list.len().saturating_sub(limit);
+            for (index, cmd) in list.iter().enumerate().skip(start) {
                 emit(&format!("{:>5}  {}", index + 1, cmd), redirect);
             }
         }
