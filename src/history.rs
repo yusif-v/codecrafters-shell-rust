@@ -2,6 +2,10 @@ use std::sync::Mutex;
 
 static HISTORY: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
+/// How many entries have already been written to a history file by
+/// `history -w` / `history -a`; `history -a` only appends entries past this.
+static FLUSHED: Mutex<usize> = Mutex::new(0);
+
 /// Records a command line as it was entered (before trimming the prompt's
 /// trailing spaces; the REPL already trims the line before passing it here).
 pub fn record(line: &str) {
@@ -33,12 +37,38 @@ pub fn load_file(path: &str) -> std::io::Result<usize> {
 
 /// Writes every history entry to `path`, one per line with a trailing
 /// newline (like bash's `history -w`). Creates the file if it doesn't exist.
+/// Marks everything written, so a following `-a` appends nothing.
 pub fn save_file(path: &str) -> std::io::Result<()> {
     let history = HISTORY.lock().unwrap();
+    let content = render(&history[..]);
+    std::fs::write(path, content)?;
+    *FLUSHED.lock().unwrap() = history.len();
+    Ok(())
+}
+
+/// Appends entries executed since the last `-w`/`-a` to `path` (like bash's
+/// `history -a`). Creates the file if it doesn't exist. Produces no output.
+pub fn append_to_file(path: &str) -> std::io::Result<()> {
+    use std::io::Write;
+
+    let history = HISTORY.lock().unwrap();
+    let mut flushed = FLUSHED.lock().unwrap();
+    let start = (*flushed).min(history.len());
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    file.write_all(render(&history[start..]).as_bytes())?;
+    *flushed = history.len();
+    Ok(())
+}
+
+/// Formats history entries as one command per line with a trailing newline.
+fn render(entries: &[String]) -> String {
     let mut content = String::new();
-    for cmd in history.iter() {
+    for cmd in entries {
         content.push_str(cmd);
         content.push('\n');
     }
-    std::fs::write(path, content)
+    content
 }

@@ -237,6 +237,14 @@ fn run_builtin(command: &str, rest: &[String], redirect: &Redirection) {
                         let _ = history::load_file(path);
                     }
                 }
+                // `history -a <file>` appends only the commands executed
+                // since the last `-w`/`-a` to the file and produces no
+                // output.
+                Some("-a") => {
+                    if let Some(path) = rest.get(1) {
+                        let _ = history::append_to_file(path);
+                    }
+                }
                 // `history -w <file>` writes the whole history (one command
                 // per line, trailing newline) to the file — creating it if
                 // needed — and produces no output.
