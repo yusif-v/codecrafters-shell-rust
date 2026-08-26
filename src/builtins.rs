@@ -229,15 +229,28 @@ fn run_builtin(command: &str, rest: &[String], redirect: &Redirection) {
         // followed by two spaces and the command.
         "history" => {
             let list = history::list();
-            // An optional numeric argument limits the listing to the most
-            // recent `n` entries, keeping their original line numbers.
-            let limit = rest
-                .first()
-                .and_then(|arg| arg.parse::<usize>().ok())
-                .unwrap_or(list.len());
-            let start = list.len().saturating_sub(limit);
-            for (index, cmd) in list.iter().enumerate().skip(start) {
-                emit(&format!("{:>5}  {}", index + 1, cmd), redirect);
+            match rest.first().map(|s| s.as_str()) {
+                // `history -r <file>...` appends each file's non-empty lines
+                // to the in-memory history and produces no output.
+                Some("-r") => {
+                    for path in &rest[1..] {
+                        let _ = history::load_file(path);
+                    }
+                }
+                // An optional numeric argument limits the listing to the most
+                // recent `n` entries, keeping their original line numbers.
+                Some(arg) => {
+                    let limit = arg.parse::<usize>().unwrap_or(list.len());
+                    let start = list.len().saturating_sub(limit);
+                    for (index, cmd) in list.iter().enumerate().skip(start) {
+                        emit(&format!("{:>5}  {}", index + 1, cmd), redirect);
+                    }
+                }
+                None => {
+                    for (index, cmd) in list.iter().enumerate() {
+                        emit(&format!("{:>5}  {}", index + 1, cmd), redirect);
+                    }
+                }
             }
         }
         // Builtins are the only commands dispatched here.
