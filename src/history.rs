@@ -72,3 +72,11 @@ fn render(entries: &[String]) -> String {
     }
     content
 }
+
+/// Writes the in-memory history to $HISTFILE if that variable is set (called
+/// when the shell exits). Missing/unset HISTFILE is a silent no-op.
+pub fn persist() {
+    if let Ok(path) = std::env::var("HISTFILE") {
+        let _ = save_file(&path);
+    }
+}

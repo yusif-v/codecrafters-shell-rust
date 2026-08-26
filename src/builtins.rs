@@ -110,7 +110,11 @@ fn run_builtin(command: &str, rest: &[String], redirect: &Redirection) {
         let _ = opt.open(p);
     }
     match command {
-        "exit" => std::process::exit(0),
+        // Persist history to $HISTFILE before terminating the process.
+        "exit" => {
+            history::persist();
+            std::process::exit(0)
+        }
         "echo" => {
             emit(&rest.join(" "), redirect);
         }

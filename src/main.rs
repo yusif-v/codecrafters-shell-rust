@@ -57,5 +57,7 @@ fn main() -> Result<(), ReadlineError> {
             }
         }
     }
+    // EOF/Ctrl-D also exits the shell: persist history to $HISTFILE.
+    history::persist();
     Ok(())
 }
