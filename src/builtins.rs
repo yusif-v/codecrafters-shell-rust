@@ -237,6 +237,14 @@ fn run_builtin(command: &str, rest: &[String], redirect: &Redirection) {
                         let _ = history::load_file(path);
                     }
                 }
+                // `history -w <file>` writes the whole history (one command
+                // per line, trailing newline) to the file — creating it if
+                // needed — and produces no output.
+                Some("-w") => {
+                    if let Some(path) = rest.get(1) {
+                        let _ = history::save_file(path);
+                    }
+                }
                 // An optional numeric argument limits the listing to the most
                 // recent `n` entries, keeping their original line numbers.
                 Some(arg) => {

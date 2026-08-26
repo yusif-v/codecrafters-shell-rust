@@ -30,3 +30,15 @@ pub fn load_file(path: &str) -> std::io::Result<usize> {
     }
     Ok(added)
 }
+
+/// Writes every history entry to `path`, one per line with a trailing
+/// newline (like bash's `history -w`). Creates the file if it doesn't exist.
+pub fn save_file(path: &str) -> std::io::Result<()> {
+    let history = HISTORY.lock().unwrap();
+    let mut content = String::new();
+    for cmd in history.iter() {
+        content.push_str(cmd);
+        content.push('\n');
+    }
+    std::fs::write(path, content)
+}
