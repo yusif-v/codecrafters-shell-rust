@@ -13,7 +13,7 @@ use crate::tokenize::tokenize;
 
 /// All builtin command names. Used by `type`, the dispatcher, and completion.
 pub const BUILTINS: &[&str] = &[
-    "echo", "exit", "type", "pwd", "cd", "complete", "jobs", "history",
+    "echo", "exit", "type", "pwd", "cd", "complete", "jobs", "history", "declare",
 ];
 
 pub fn is_builtin(command: &str) -> bool {
