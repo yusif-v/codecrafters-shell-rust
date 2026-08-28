@@ -291,9 +291,14 @@ fn run_builtin(command: &str, rest: &[String], redirect: &Redirection) {
                     }
                 }
             } else if let Some(assignment) = rest.iter().find(|a| a.contains('=')) {
-                // `declare NAME=VALUE`: store it (allowing reassignment).
+                // `declare NAME=VALUE`: validate the name then store it.
                 if let Some((name, value)) = assignment.split_once('=') {
-                    if !name.is_empty() {
+                    if name.is_empty() || !vars::is_valid_name(name) {
+                        emit(
+                            &format!("declare: `{}': not a valid identifier", assignment),
+                            redirect,
+                        );
+                    } else {
                         vars::set(name, value);
                     }
                 }

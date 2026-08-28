@@ -13,3 +13,14 @@ pub fn set(name: &str, value: &str) {
 pub fn get(name: &str) -> Option<String> {
     VARS.lock().unwrap().get(name).cloned()
 }
+
+/// A valid shell variable name starts with a letter or underscore and
+/// contains only ASCII letters, digits, and underscores.
+pub fn is_valid_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(c) if c == '_' || c.is_ascii_alphabetic() => {}
+        _ => return false,
+    }
+    chars.all(|c| c == '_' || c.is_ascii_alphanumeric())
+}
