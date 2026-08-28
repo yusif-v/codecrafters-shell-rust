@@ -6,6 +6,7 @@ mod jobs;
 mod path;
 mod redirection;
 mod tokenize;
+mod vars;
 
 use rustyline::config::CompletionType;
 use rustyline::error::ReadlineError;

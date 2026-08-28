@@ -6,6 +6,7 @@ use std::process::{Command, Stdio};
 
 use crate::completions::completions as completion_registry;
 use crate::history;
+use crate::vars;
 use crate::jobs;
 use crate::path::{find_executable, home_dir};
 use crate::redirection::{emit, parse_redirections, Redirection};
@@ -273,14 +274,28 @@ fn run_builtin(command: &str, rest: &[String], redirect: &Redirection) {
                 }
             }
         }
-        // `declare -p NAME` prints a description of the variable NAME. No
-        // variable store exists yet, so any requested name is treated as
-        // missing and reported as not found.
+        // `declare NAME=VALUE` stores a variable; `declare -p NAME` prints a
+        // description of it (`declare -- NAME="VALUE"`), or reports it as not
+        // found when unset.
         "declare" => {
+            let has_p = rest.first().map(|s| s.as_str()) == Some("-p");
+            // The variable name is the first non-flag argument.
             let name = rest.iter().find(|a| !a.starts_with('-')).map(|s| s.as_str());
-            if rest.first().map(|s| s.as_str()) == Some("-p") {
+            if has_p {
                 if let Some(name) = name {
-                    emit(&format!("declare: {}: not found", name), redirect);
+                    match vars::get(name) {
+                        Some(value) => {
+                            emit(&format!("declare -- {}=\"{}\"", name, value), redirect)
+                        }
+                        None => emit(&format!("declare: {}: not found", name), redirect),
+                    }
+                }
+            } else if let Some(assignment) = rest.iter().find(|a| a.contains('=')) {
+                // `declare NAME=VALUE`: store it (allowing reassignment).
+                if let Some((name, value)) = assignment.split_once('=') {
+                    if !name.is_empty() {
+                        vars::set(name, value);
+                    }
                 }
             }
         }
