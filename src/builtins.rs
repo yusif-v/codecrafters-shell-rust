@@ -273,6 +273,17 @@ fn run_builtin(command: &str, rest: &[String], redirect: &Redirection) {
                 }
             }
         }
+        // `declare -p NAME` prints a description of the variable NAME. No
+        // variable store exists yet, so any requested name is treated as
+        // missing and reported as not found.
+        "declare" => {
+            let name = rest.iter().find(|a| !a.starts_with('-')).map(|s| s.as_str());
+            if rest.first().map(|s| s.as_str()) == Some("-p") {
+                if let Some(name) = name {
+                    emit(&format!("declare: {}: not found", name), redirect);
+                }
+            }
+        }
         // Builtins are the only commands dispatched here.
         _ => {}
     }
