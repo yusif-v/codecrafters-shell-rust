@@ -468,7 +468,13 @@ pub fn reap_background_jobs() {
 /// dispatch builtins or spawn an external program. A trailing `&` token runs
 /// the command in the background (the shell doesn't wait for it to finish).
 pub fn run_command(input: &str) {
-    let args = tokenize(input);
+    let mut args = tokenize(input);
+    // Expand `$VAR` references in every argument before any further parsing,
+    // so builtins, external programs, redirections, and pipelines all see the
+    // expanded values.
+    for arg in args.iter_mut() {
+        *arg = vars::expand_word(arg);
+    }
     if args.is_empty() {
         return;
     }
