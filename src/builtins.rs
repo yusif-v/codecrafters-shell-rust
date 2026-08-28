@@ -475,6 +475,11 @@ pub fn run_command(input: &str) {
     for arg in args.iter_mut() {
         *arg = vars::expand_word(arg);
     }
+    // An unquoted expansion that resolves to nothing (e.g. an unset variable
+    // with no surrounding literal text) yields an empty word, which is dropped
+    // entirely — it contributes no argument. Quoted empties never produce a
+    // token in the first place (see tokenize).
+    args.retain(|a| !a.is_empty());
     if args.is_empty() {
         return;
     }
